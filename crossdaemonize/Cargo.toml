@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Cross-platform daemonization for Rust (Unix + Windows)"
-repository = "https://github.com/seuusuario/crossdaemonize" # Altere para o link real se for publicar
+repository = "https://github.com/knsd/crossdaemonize"
 
 [dependencies]
 cfg-if = "1.0"

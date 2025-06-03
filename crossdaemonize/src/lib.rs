@@ -1,5 +1,5 @@
 // Copyright (c) 2016 Fedor Gogolev <knsd@knsd.net>
-// Modificado para tentativa de porte para Windows.
+// Modified to include Windows support.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -8,8 +8,8 @@
 // except according to those terms.
 
 //!
-//! daemonize is a library for writing system daemons/background processes.
-//! This version attempts to add Windows compatibility.
+//! crossdaemonize is a library for writing system daemons/background processes.
+//! This crate supports both Unix and Windows for daemonizing processes.
 //!
 //! The original repository is located at <https://github.com/knsd/daemonize/>.
 //!
@@ -26,17 +26,8 @@
 //! * `chown_pid_file`: Windows uses ACLs for file permissions, not Unix-style ownership.
 //! * `user` and `group`: Windows manages process identity via user accounts and services,
 //!     not simple UID/GID changes. To run a process under a different user, consider
-//!     creating a Windows Service.
-//! * `umask`: Windows uses ACLs for default file permissions, not a umask.
-//! * `chroot`: The concept of changing the root directory does not apply to Windows.
-//!
-//! Warnings for these ignored features can be suppressed using `.suppress_unsupported_warnings(true)`.
-//!
+// To disable this lint crate-wide place `#![allow(clippy::collapsible_match)]` at the top of your crate or apply it to specific functions as needed.
 
-// Adicione esta linha no topo do seu lib.rs ou main.rs para desativar o aviso em todo o crate
-// #![allow(clippy::collapsible_match)]
-// Ou para funções específicas, se preferir:
-// #[allow(clippy::collapsible_match)]
 
 mod error;
 
@@ -51,7 +42,7 @@ use std::process::exit;
 cfg_if! {
     if #[cfg(unix)] {
         extern crate libc;
-        use std::os::unix::ffi::{OsStringExt, OsStrExt};
+        use std::os::unix::ffi::OsStrExt;
         use std::os::unix::io::{AsRawFd, RawFd};
         use std::env::set_current_dir;
         use std::ffi::CString;
@@ -670,9 +661,9 @@ impl<T> Daemonize<T> {
 
             if let Some(fd) = pid_file_handle {
                 write_pid_file_unix(fd)?;
-                // O fd do pid_file é mantido aberto e bloqueado pelo daemon.
-                // `std::mem::forget(fd)` garante que o RawFd não é fechado quando sai do escopo.
-                std::mem::forget(fd);
+                // The pid file descriptor remains locked and open for the daemon's lifetime.
+                // No handle is stored here, but leaving `fd` in scope keeps it open.
+                let _ = fd;
             }
 
             Ok(privileged_action_result)

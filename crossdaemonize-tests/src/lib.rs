@@ -3,15 +3,26 @@
 extern crate crossdaemonize;
 extern crate tempfile;
 
+use bincode;
+use crossdaemonize::{Daemonize, Outcome};
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
-use serde::{Serialize, Deserialize};
-use bincode;
-use crossdaemonize::{Daemonize, Outcome};
 
+use chrono::Local;
 use std::fs::OpenOptions;
+
+macro_rules! log_with_details {
+    ($file:expr, $level:expr, $($arg:tt)*) => {{
+        use std::io::Write;
+        let timestamp = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let msg = format!($($arg)*);
+        writeln!($file, "[{}] [{}:{}] [{}] {}", timestamp, file!(), line!(), $level, msg).ok();
+        $file.flush().ok();
+    }};
+}
 
 #[cfg(unix)]
 use libc;
@@ -168,7 +179,11 @@ impl Tester {
                 if let Some(mut stderr_handle) = child.stderr.take() {
                     stderr_handle.read_to_string(&mut stderr_output).ok();
                 }
-                return Err(format!("timeout waiting for tester result. Stderr: {}", stderr_output).into());
+                return Err(format!(
+                    "timeout waiting for tester result. Stderr: {}",
+                    stderr_output
+                )
+                .into());
             }
             match child.try_wait().expect("unable to wait for result") {
                 Some(result) => break result,
@@ -188,17 +203,22 @@ impl Tester {
                 "tester exited with status code {:?}, stderr: {}",
                 exit_status.code(),
                 stderr_output
-            ).into());
+            )
+            .into());
         }
 
         let mut data = Vec::new();
         std::fs::File::open(&output_file_path)
             .map_err(|e| format!("Failed to open output file {:?}: {}", output_file_path, e))?
             .read_to_end(&mut data)
-            .map_err(|e| format!("Failed to read data from output file {:?}: {}", output_file_path, e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to read data from output file {:?}: {}",
+                    output_file_path, e
+                )
+            })?;
 
-        bincode::deserialize(&data)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        bincode::deserialize(&data).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 }
 
@@ -244,9 +264,19 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
         .open(log_file_path)
         .map_err(|e| format!("Failed to open log file {}: {}", log_file_path, e))?;
 
-    writeln!(log_file, "[DEBUG - START] Tester started at {:?}", std::time::Instant::now()).ok();
-    writeln!(log_file, "[DEBUG - SYSTEM] OS: {}", std::env::consts::OS).ok();
-    writeln!(log_file, "[DEBUG - SYSTEM] Parent CWD: {:?}", std::env::current_dir().ok()).ok();
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "[START] Tester started at {:?}",
+        std::time::Instant::now()
+    );
+    log_with_details!(log_file, "DEBUG", "[SYSTEM] OS: {}", std::env::consts::OS);
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "[SYSTEM] Parent CWD: {:?}",
+        std::env::current_dir().ok()
+    );
 
     let mut daemonize_builder = Daemonize::new(); // builder configured using parsed arguments
 
@@ -288,54 +318,118 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     let mut human_readable_passed: bool = false;
     let mut output_file_path_parsed: Option<PathBuf> = None;
 
-
-    writeln!(log_file, "[DEBUG - ARGS] Raw arguments received: {:?}", std::env::args().collect::<Vec<_>>()).ok();
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "[ARGS] Raw arguments received: {:?}",
+        std::env::args().collect::<Vec<_>>()
+    );
 
     // Loop to parse all arguments
     while let Some(key) = args.next() {
-        writeln!(log_file, "[DEBUG] Processing arg: {}", key).ok();
+        log_with_details!(log_file, "DEBUG", "Processing arg: {}", key);
         daemonize_builder = match key.as_str() {
-            ARG_PID_FILE => { pid_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder }, // Pass the path, configured later
-            ARG_CHOWN_PID_FILE => { chown_pid_file_passed = Some(read_value::<bool>(&mut args, &key)); daemonize_builder },
-            ARG_WORKING_DIRECTORY => { working_directory_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
-            ARG_USER_STRING => { user_string_passed = Some(read_value::<String>(&mut args, &key)); daemonize_builder },
+            ARG_PID_FILE => {
+                pid_file_passed = Some(read_value::<PathBuf>(&mut args, &key));
+                daemonize_builder
+            } // Pass the path, configured later
+            ARG_CHOWN_PID_FILE => {
+                chown_pid_file_passed = Some(read_value::<bool>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_WORKING_DIRECTORY => {
+                working_directory_passed = Some(read_value::<PathBuf>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_USER_STRING => {
+                user_string_passed = Some(read_value::<String>(&mut args, &key));
+                daemonize_builder
+            }
             #[cfg(unix)]
-            ARG_USER_NUM => { user_num_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
-            ARG_GROUP_STRING => { group_string_passed = Some(read_value::<String>(&mut args, &key)); daemonize_builder },
+            ARG_USER_NUM => {
+                user_num_passed = Some(read_value::<u32>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_GROUP_STRING => {
+                group_string_passed = Some(read_value::<String>(&mut args, &key));
+                daemonize_builder
+            }
             #[cfg(unix)]
-            ARG_GROUP_NUM => { group_num_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
-            ARG_UMASK => { umask_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
-            ARG_CHROOT => { chroot_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
+            ARG_GROUP_NUM => {
+                group_num_passed = Some(read_value::<u32>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_UMASK => {
+                umask_passed = Some(read_value::<u32>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_CHROOT => {
+                chroot_passed = Some(read_value::<PathBuf>(&mut args, &key));
+                daemonize_builder
+            }
             ARG_STDOUT => {
                 let file_path = read_value::<PathBuf>(&mut args, &key);
-                writeln!(log_file, "[DEBUG] Redirecting stdout to: {:?}", file_path).ok();
+                log_with_details!(log_file, "DEBUG", "Redirecting stdout to: {:?}", file_path);
                 let file = std::fs::File::create(&file_path)
                     .map_err(|e| format!("unable to open stdout file {:?}: {}", file_path, e))?;
                 daemonize_builder.stdout(file)
             }
             ARG_STDERR => {
                 let file_path = read_value::<PathBuf>(&mut args, &key);
-                writeln!(log_file, "[DEBUG] Redirecting stderr to: {:?}", file_path).ok();
+                log_with_details!(log_file, "DEBUG", "Redirecting stderr to: {:?}", file_path);
                 let file = std::fs::File::create(&file_path)
                     .map_err(|e| format!("unable to open stderr file {:?}: {}", file_path, e))?;
                 daemonize_builder.stderr(file)
             }
-            ARG_ADDITIONAL_FILE => { additional_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
-            ARG_SLEEP_MS => { sleep_ms_passed = Some(read_value::<u64>(&mut args, &key)); daemonize_builder },
-            ARG_HUMAN_READABLE => { human_readable_passed = true; daemonize_builder },
-            ARG_OUTPUT_FILE => { output_file_path_parsed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
+            ARG_ADDITIONAL_FILE => {
+                additional_file_passed = Some(read_value::<PathBuf>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_SLEEP_MS => {
+                sleep_ms_passed = Some(read_value::<u64>(&mut args, &key));
+                daemonize_builder
+            }
+            ARG_HUMAN_READABLE => {
+                human_readable_passed = true;
+                daemonize_builder
+            }
+            ARG_OUTPUT_FILE => {
+                output_file_path_parsed = Some(read_value::<PathBuf>(&mut args, &key));
+                daemonize_builder
+            }
             key => return Err(format!("unknown key: {}", key).into()),
         }
     }
 
-    writeln!(log_file, "[DEBUG] output_file_path_parsed after arg parsing: {:?}", output_file_path_parsed).ok();
-    writeln!(log_file, "[DEBUG] working_directory_passed after arg parsing: {:?}", working_directory_passed).ok();
-    writeln!(log_file, "[DEBUG] additional_file_passed after arg parsing: {:?}", additional_file_passed).ok();
-    writeln!(log_file, "[DEBUG] pid_file_passed after arg parsing: {:?}", pid_file_passed).ok();
-
-    writeln!(
+    log_with_details!(
         log_file,
-        "[DEBUG] summary - pid_file: {:?}, chown_pid_file: {:?}, working_directory: {:?}, user: {:?}, group: {:?}, umask: {:?}, chroot: {:?}, stdout: {:?}, stderr: {:?}, additional_file: {:?}, sleep_ms: {:?}, human_readable: {}",
+        "DEBUG",
+        "output_file_path_parsed after arg parsing: {:?}",
+        output_file_path_parsed
+    );
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "working_directory_passed after arg parsing: {:?}",
+        working_directory_passed
+    );
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "additional_file_passed after arg parsing: {:?}",
+        additional_file_passed
+    );
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "pid_file_passed after arg parsing: {:?}",
+        pid_file_passed
+    );
+
+    log_with_details!(
+        log_file,
+        "DEBUG",
+        "summary - pid_file: {:?}, chown_pid_file: {:?}, working_directory: {:?}, user: {:?}, group: {:?}, umask: {:?}, chroot: {:?}, stdout: {:?}, stderr: {:?}, additional_file: {:?}, sleep_ms: {:?}, human_readable: {}",
         pid_file_passed,
         chown_pid_file_passed,
         working_directory_passed,
@@ -348,7 +442,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
         additional_file_passed,
         sleep_ms_passed,
         human_readable_passed
-    ).ok();
+    );
 
     // Configure the daemonize builder using the parsed arguments
 
@@ -361,8 +455,12 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     // working_directory is set on the builder; the directory must exist
     if let Some(path) = working_directory_passed {
         // ensure the directory exists before asking the daemon to switch to it
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("Failed to create working directory {:?} before daemonizing: {}", path, e))?;
+        std::fs::create_dir_all(&path).map_err(|e| {
+            format!(
+                "Failed to create working directory {:?} before daemonizing: {}",
+                path, e
+            )
+        })?;
         daemonize_builder = daemonize_builder.working_directory(&path);
     }
     if let Some(user) = user_string_passed {
@@ -389,82 +487,144 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     // additional_file is handled after daemonization in the child.
     // sleep_ms and human_readable are also used only after daemonization.
 
-
     let mut dummy_handle = None;
-    let (mut read_pipe, write_pipe) = os_pipe::pipe()
-        .map_err(|e| format!("unable to open pipe: {}", e))?;
+    let (mut read_pipe, write_pipe) =
+        os_pipe::pipe().map_err(|e| format!("unable to open pipe: {}", e))?;
 
-
-    writeln!(log_file, "[DEBUG] Calling daemonize.execute()").ok();
-    match daemonize_builder.execute(&mut dummy_handle) { // Use the configured builder
+    log_with_details!(log_file, "DEBUG", "Calling daemonize.execute()");
+    match daemonize_builder.execute(&mut dummy_handle) {
+        // Use the configured builder
         Outcome::Parent(_) => {
-            writeln!(log_file, "[DEBUG - PARENT] Daemonized process spawned. Exiting parent path.").ok();
+            log_with_details!(
+                log_file,
+                "DEBUG",
+                "[PARENT] Daemonized process spawned. Exiting parent path."
+            );
             drop(write_pipe);
-            read_pipe.read_to_end(&mut Vec::new()).map_err(|e| format!("Parent: unable to read pipe: {}", e))?;
-            std::io::stdout().write_all(&[]).map_err(|e| format!("Parent: unable to write data: {}", e))?;
+            read_pipe
+                .read_to_end(&mut Vec::new())
+                .map_err(|e| format!("Parent: unable to read pipe: {}", e))?;
+            std::io::stdout()
+                .write_all(&[])
+                .map_err(|e| format!("Parent: unable to write data: {}", e))?;
             Ok(())
         }
         Outcome::Child(result) => {
             drop(read_pipe); // close the read end in the child
 
-            writeln!(log_file, "[DEBUG - CHILD] Inside child process. Daemonize result: {:?}", result).ok();
+            log_with_details!(
+                log_file,
+                "DEBUG",
+                "[CHILD] Inside child process. Daemonize result: {:?}",
+                result
+            );
 
             if let Err(err) = result {
-                writeln!(log_file, "[DEBUG - CHILD - ERROR] Daemonize failed: {:?}", err).ok();
+                log_with_details!(log_file, "ERROR", "[CHILD] Daemonize failed: {:?}", err);
                 return Err(Box::new(err));
             }
 
             // handle additional_file in the child; the directory was created by the parent
             if let Some(path) = additional_file_passed {
-                writeln!(log_file, "[DEBUG - CHILD] Creating additional file: {:?}", path).ok();
+                log_with_details!(
+                    log_file,
+                    "DEBUG",
+                    "[CHILD] Creating additional file: {:?}",
+                    path
+                );
                 if let Ok(mut file) = std::fs::File::create(&path) {
                     file.write_all(ADDITIONAL_FILE_DATA.as_bytes()).ok();
                 } else {
                     let create_err = std::io::Error::last_os_error();
-                    writeln!(log_file, "[DEBUG - CHILD - ERROR] Failed to create additional file {:?}: {}. OS Error: {}", path, create_err, create_err.raw_os_error().unwrap_or(0)).ok();
+                    log_with_details!(
+                        log_file,
+                        "ERROR",
+                        "[CHILD] Failed to create additional file {:?}: {}. OS Error: {}",
+                        path,
+                        create_err,
+                        create_err.raw_os_error().unwrap_or(0)
+                    );
                 }
             }
 
-
-            writeln!(log_file, "[DEBUG - CHILD] Daemonize successful. Creating EnvData.").ok();
+            log_with_details!(
+                log_file,
+                "DEBUG",
+                "[CHILD] Daemonize successful. Creating EnvData."
+            );
             let env = EnvData::new();
-            writeln!(log_file, "[DEBUG - CHILD] EnvData created: {:?}", env).ok();
+            log_with_details!(log_file, "DEBUG", "[CHILD] EnvData created: {:?}", env);
             print!("{}", STDOUT_DATA);
             eprint!("{}", STDERR_DATA);
 
             if let Some(path) = output_file_path_parsed {
-                writeln!(log_file, "[DEBUG - CHILD] Writing EnvData to temporary file: {:?}", path).ok();
-                let mut output_file = std::fs::File::create(&path)
-                    .map_err(|e| format!("Child: Failed to create output file {:?}: {}", path, e))?;
+                log_with_details!(
+                    log_file,
+                    "DEBUG",
+                    "[CHILD] Writing EnvData to temporary file: {:?}",
+                    path
+                );
+                let mut output_file = std::fs::File::create(&path).map_err(|e| {
+                    format!("Child: Failed to create output file {:?}: {}", path, e)
+                })?;
 
                 if human_readable_passed {
-                    writeln!(log_file, "[DEBUG - CHILD] Serializing human readable EnvData to file.").ok();
-                    output_file.write_all(format!("{:?}\n", env).as_bytes())
-                        .map_err(|e| format!("Child: failed to write human readable data to file: {}", e))?;
+                    log_with_details!(
+                        log_file,
+                        "DEBUG",
+                        "[CHILD] Serializing human readable EnvData to file."
+                    );
+                    output_file
+                        .write_all(format!("{:?}\n", env).as_bytes())
+                        .map_err(|e| {
+                            format!("Child: failed to write human readable data to file: {}", e)
+                        })?;
                 } else {
-                    writeln!(log_file, "[DEBUG - CHILD] Serializing bincode EnvData to file.").ok();
-                    let data = bincode::serialize(&env)
-                        .map_err(|e| format!("Child: bincode serialization failed to file: {}", e))?;
-                    output_file.write_all(&data)
-                        .map_err(|e| format!("Child: failed to write bincode data to file: {}", e))?;
+                    log_with_details!(
+                        log_file,
+                        "DEBUG",
+                        "[CHILD] Serializing bincode EnvData to file."
+                    );
+                    let data = bincode::serialize(&env).map_err(|e| {
+                        format!("Child: bincode serialization failed to file: {}", e)
+                    })?;
+                    output_file.write_all(&data).map_err(|e| {
+                        format!("Child: failed to write bincode data to file: {}", e)
+                    })?;
                 }
-                output_file.flush()
+                output_file
+                    .flush()
                     .map_err(|e| format!("Child: failed to flush output file: {}", e))?;
-                writeln!(log_file, "[DEBUG - CHILD] Data written to temporary file. Closing file.").ok();
-
+                log_with_details!(
+                    log_file,
+                    "DEBUG",
+                    "[CHILD] Data written to temporary file. Closing file."
+                );
             } else {
-                writeln!(log_file, "[DEBUG - CHILD - ERROR] Output file path not provided! This is an error in test setup.").ok();
+                log_with_details!(
+                    log_file,
+                    "ERROR",
+                    "[CHILD] Output file path not provided! This is an error in test setup."
+                );
                 return Err("Output file path not provided to tester.".into());
             }
 
-            writeln!(log_file, "[DEBUG - CHILD] Dropping main write_pipe (not used for EnvData).").ok();
+            log_with_details!(
+                log_file,
+                "DEBUG",
+                "[CHILD] Dropping main write_pipe (not used for EnvData)."
+            );
             drop(write_pipe);
 
             if let Some(duration_ms) = sleep_ms_passed {
-                writeln!(log_file, "[DEBUG - CHILD] Sleeping for {}ms.", duration_ms).ok();
+                log_with_details!(log_file, "DEBUG", "[CHILD] Sleeping for {}ms.", duration_ms);
                 std::thread::sleep(std::time::Duration::from_millis(duration_ms));
             }
-            writeln!(log_file, "[DEBUG - CHILD] Child process finished successfully.").ok();
+            log_with_details!(
+                log_file,
+                "DEBUG",
+                "[CHILD] Child process finished successfully."
+            );
             Ok(())
         }
     }

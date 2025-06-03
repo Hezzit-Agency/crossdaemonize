@@ -3,9 +3,9 @@
 extern crate crossdaemonize_tests;
 extern crate tempfile;
 
-use crossdaemonize_tests::{Tester, STDOUT_DATA, STDERR_DATA};
 #[cfg(windows)]
 use crossdaemonize_tests::ADDITIONAL_FILE_DATA;
+use crossdaemonize_tests::{Tester, STDERR_DATA, STDOUT_DATA};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use tempfile::TempDir;
@@ -13,7 +13,11 @@ use tempfile::TempDir;
 #[test]
 fn simple() {
     let result = Tester::new().run();
-    assert!(result.is_ok(), "Simple test failed: {:?}", result.unwrap_err());
+    assert!(
+        result.is_ok(),
+        "Simple test failed: {:?}",
+        result.unwrap_err()
+    );
 }
 
 #[test]
@@ -25,41 +29,66 @@ fn chdir() {
     let target_dir_path = temp_dir_for_chdir.path().to_path_buf(); // full path of the temporary directory
 
     let _result_chdir = Tester::new().working_directory(&target_dir_path).run();
-    assert!(_result_chdir.is_ok(), "chdir test failed: {:?}", _result_chdir.unwrap_err());
+    assert!(
+        _result_chdir.is_ok(),
+        "chdir test failed: {:?}",
+        _result_chdir.unwrap_err()
+    );
 
     #[cfg(unix)]
     {
-        let expected_cwd = temp_dir_for_chdir.path().canonicalize()
+        let expected_cwd = temp_dir_for_chdir
+            .path()
+            .canonicalize()
             .expect("Failed to canonicalize path for chdir test")
             .to_string_lossy()
             .to_string();
         let actual_cwd = _result_chdir.unwrap().cwd;
-        assert_eq!(actual_cwd, expected_cwd, "CWD should match the temporary directory on Unix");
+        assert_eq!(
+            actual_cwd, expected_cwd,
+            "CWD should match the temporary directory on Unix"
+        );
     }
     #[cfg(windows)]
     {
         // Canonicalize to resolve ., .. and ensure a full path.
         let expected_cwd = temp_dir_for_chdir
-                                .path()
-                                .canonicalize()
-                                .expect("Failed to canonicalize path for chdir test")
-                                .to_string_lossy()
-                                .to_string();
-        let expected_cwd = expected_cwd.trim_end_matches('\\').trim_end_matches('/').to_string();
-        let actual_cwd = _result_chdir.unwrap().cwd.trim_end_matches('\\').trim_end_matches('/').to_string();
+            .path()
+            .canonicalize()
+            .expect("Failed to canonicalize path for chdir test")
+            .to_string_lossy()
+            .to_string();
+        let expected_cwd = expected_cwd
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .to_string();
+        let actual_cwd = _result_chdir
+            .unwrap()
+            .cwd
+            .trim_end_matches('\\')
+            .trim_end_matches('/')
+            .to_string();
 
-        assert_eq!(actual_cwd, expected_cwd, "CWD should match the temporary directory on Windows");
+        assert_eq!(
+            actual_cwd, expected_cwd,
+            "CWD should match the temporary directory on Windows"
+        );
     }
 }
 
 #[test]
 fn umask() {
     // create a temporary directory for the additional file
-    let tmpdir_for_additional_file = TempDir::new().expect("Failed to create tmpdir for additional file");
+    let tmpdir_for_additional_file =
+        TempDir::new().expect("Failed to create tmpdir for additional file");
     let path = tmpdir_for_additional_file.path().join("umask-test-file");
 
     let _result_umask = Tester::new().umask(0o222).additional_file(&path).run();
-    assert!(_result_umask.is_ok(), "Umask test failed: {:?}", _result_umask.unwrap_err());
+    assert!(
+        _result_umask.is_ok(),
+        "Umask test failed: {:?}",
+        _result_umask.unwrap_err()
+    );
 
     // If the test passed the additional file should exist at this path.
     #[cfg(unix)]
@@ -69,7 +98,11 @@ fn umask() {
     #[cfg(windows)]
     {
         assert!(path.exists(), "Additional file should exist on Windows.");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), ADDITIONAL_FILE_DATA, "Additional file content should match.");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            ADDITIONAL_FILE_DATA,
+            "Additional file content should match."
+        );
     }
 }
 
@@ -84,15 +117,31 @@ fn pid() {
         .pid_file(&path)
         .sleep(std::time::Duration::from_secs(1))
         .run();
-    assert!(_result_first_run.is_ok(), "First PID run should succeed: {:?}", _result_first_run.unwrap_err());
+    assert!(
+        _result_first_run.is_ok(),
+        "First PID run should succeed: {:?}",
+        _result_first_run.unwrap_err()
+    );
     let pid_content = std::fs::read_to_string(&path).expect("Should read pid file");
-    assert!(pid_content.ends_with('\n'), "PID content should end with newline");
-    let pid = pid_content[..pid_content.len() - 1].parse().expect("PID should be parsable");
-    assert_eq!(_result_first_run.unwrap().pid, pid, "PID from EnvData should match PID in file");
+    assert!(
+        pid_content.ends_with('\n'),
+        "PID content should end with newline"
+    );
+    let pid = pid_content[..pid_content.len() - 1]
+        .parse()
+        .expect("PID should be parsable");
+    assert_eq!(
+        _result_first_run.unwrap().pid,
+        pid,
+        "PID from EnvData should match PID in file"
+    );
 
     // second run should fail because the pid file already exists (lock active)
     let _result_second_run = Tester::new().pid_file(&path).run();
-    assert!(_result_second_run.is_err(), "Second PID run should fail because pidfile exists/is locked");
+    assert!(
+        _result_second_run.is_err(),
+        "Second PID run should fail because pidfile exists/is locked"
+    );
 }
 
 #[test]
@@ -103,7 +152,11 @@ fn redirect_stream() {
 
     // Case 1: redirect both stdout and stderr
     let _result1 = Tester::new().stdout(&stdout).stderr(&stderr).run();
-    assert!(_result1.is_ok(), "Redirect stream test 1 failed: {:?}", _result1.unwrap_err());
+    assert!(
+        _result1.is_ok(),
+        "Redirect stream test 1 failed: {:?}",
+        _result1.unwrap_err()
+    );
 
     assert_eq!(&std::fs::read_to_string(&stdout).unwrap(), STDOUT_DATA);
     assert_eq!(&std::fs::read_to_string(&stderr).unwrap(), STDERR_DATA);
@@ -113,7 +166,11 @@ fn redirect_stream() {
 
     // Case 2: only stdout is redirected
     let _result2 = Tester::new().stdout(&stdout).run();
-    assert!(_result2.is_ok(), "Redirect stream test 2 failed: {:?}", _result2.unwrap_err());
+    assert!(
+        _result2.is_ok(),
+        "Redirect stream test 2 failed: {:?}",
+        _result2.unwrap_err()
+    );
     assert_eq!(&std::fs::read_to_string(&stdout).unwrap(), STDOUT_DATA);
     assert_eq!(
         std::fs::metadata(&stderr).unwrap_err().kind(),
@@ -124,7 +181,11 @@ fn redirect_stream() {
 
     // Case 3: only stderr is redirected
     let _result3 = Tester::new().stderr(&stderr).run();
-    assert!(_result3.is_ok(), "Redirect stream test 3 failed: {:?}", _result3.unwrap_err());
+    assert!(
+        _result3.is_ok(),
+        "Redirect stream test 3 failed: {:?}",
+        _result3.unwrap_err()
+    );
     assert_eq!(
         std::fs::metadata(&stdout).unwrap_err().kind(),
         std::io::ErrorKind::NotFound
@@ -150,7 +211,11 @@ fn complex_run() {
         .sleep(std::time::Duration::from_millis(100))
         .run();
 
-    assert!(result.is_ok(), "Complex run failed: {:?}", result.unwrap_err());
+    assert!(
+        result.is_ok(),
+        "Complex run failed: {:?}",
+        result.unwrap_err()
+    );
     assert!(stdout.exists());
     assert!(stderr.exists());
     assert!(pid.exists());
@@ -164,7 +229,11 @@ fn user_group_string() {
         .user_string("nobody")
         .group_string("daemon")
         .run();
-    assert!(result.is_ok(), "user/group string test failed: {:?}", result.unwrap_err());
+    assert!(
+        result.is_ok(),
+        "user/group string test failed: {:?}",
+        result.unwrap_err()
+    );
     let env = result.unwrap();
     assert_eq!(env.euid, 65534, "euid should drop to nobody");
     assert_eq!(env.egid, 1, "egid should drop to daemon group");
@@ -173,11 +242,12 @@ fn user_group_string() {
 #[cfg(unix)]
 #[test]
 fn user_group_numeric() {
-    let result = Tester::new()
-        .user_num(65534)
-        .group_num(1)
-        .run();
-    assert!(result.is_ok(), "user/group numeric test failed: {:?}", result.unwrap_err());
+    let result = Tester::new().user_num(65534).group_num(1).run();
+    assert!(
+        result.is_ok(),
+        "user/group numeric test failed: {:?}",
+        result.unwrap_err()
+    );
     let env = result.unwrap();
     assert_eq!(env.euid, 65534);
     assert_eq!(env.egid, 1);
@@ -194,7 +264,11 @@ fn chown_pid_file() {
         .user_string("nobody")
         .group_string("daemon")
         .run();
-    assert!(result.is_ok(), "chown pidfile test failed: {:?}", result.unwrap_err());
+    assert!(
+        result.is_ok(),
+        "chown pidfile test failed: {:?}",
+        result.unwrap_err()
+    );
 
     #[cfg(unix)]
     {
@@ -204,4 +278,3 @@ fn chown_pid_file() {
         assert_eq!(meta.gid(), 1, "pid file gid should be daemon");
     }
 }
-

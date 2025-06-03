@@ -1,7 +1,7 @@
+use cfg_if::cfg_if;
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
-use cfg_if::cfg_if;
 
 pub type OsError = i32;
 
@@ -62,7 +62,10 @@ pub enum ErrorKind {
     #[cfg(windows)]
     PrivilegeNotHeld,
     #[cfg(windows)]
-    WindowsApiError { function_name: String, error_code: u32 },
+    WindowsApiError {
+        function_name: String,
+        error_code: u32,
+    },
 
     InvalidPath(PathBuf),
     ReadPid(OsError),
@@ -98,7 +101,9 @@ impl ErrorKind {
             ErrorKind::CloseDeviceNull(_) => "unable to close /dev/null or NUL".to_string(),
             ErrorKind::TruncatePidfile(_) => "unable to truncate pid file".to_string(),
             ErrorKind::WritePid(_) => "unable to write self pid to pid file".to_string(),
-            ErrorKind::WritePidUnspecifiedError => "unable to write self pid to pid file due to unknown reason".to_string(),
+            ErrorKind::WritePidUnspecifiedError => {
+                "unable to write self pid to pid file due to unknown reason".to_string()
+            }
             #[cfg(unix)]
             ErrorKind::Chroot(_) => "unable to chroot into directory".to_string(),
 
@@ -120,8 +125,14 @@ impl ErrorKind {
             #[cfg(windows)]
             ErrorKind::PrivilegeNotHeld => "a required privilege is not held".to_string(),
             #[cfg(windows)]
-            ErrorKind::WindowsApiError { function_name, error_code } => {
-                format!("Windows API call '{}' failed with code {}", function_name, error_code)
+            ErrorKind::WindowsApiError {
+                function_name,
+                error_code,
+            } => {
+                format!(
+                    "Windows API call '{}' failed with code {}",
+                    function_name, error_code
+                )
             }
 
             ErrorKind::InvalidPath(p) => format!("invalid path provided: {:?}", p),
@@ -132,22 +143,35 @@ impl ErrorKind {
     pub fn get_os_error_code(&self) -> Option<OsError> {
         match self {
             #[cfg(unix)]
-            ErrorKind::Fork(e) | ErrorKind::Wait(e) | ErrorKind::DetachSession(e)
-            | ErrorKind::GetPidfileFlags(e) | ErrorKind::SetPidfileFlags(e)
-            | ErrorKind::ChownPidfile(e) | ErrorKind::Chroot(e) => Some(*e),
+            ErrorKind::Fork(e)
+            | ErrorKind::Wait(e)
+            | ErrorKind::DetachSession(e)
+            | ErrorKind::GetPidfileFlags(e)
+            | ErrorKind::SetPidfileFlags(e)
+            | ErrorKind::ChownPidfile(e)
+            | ErrorKind::Chroot(e) => Some(*e),
 
-            ErrorKind::SetGroup(e) | ErrorKind::SetUser(e) | ErrorKind::ChangeDirectory(e)
-            | ErrorKind::OpenPidfile(e) | ErrorKind::LockPidfile(e)
-            | ErrorKind::OpenDeviceNull(e) | ErrorKind::RedirectStreams(e)
-            | ErrorKind::CloseDeviceNull(e) | ErrorKind::TruncatePidfile(e)
-            | ErrorKind::WritePid(e) | ErrorKind::ReadPid(e) => Some(*e),
+            ErrorKind::SetGroup(e)
+            | ErrorKind::SetUser(e)
+            | ErrorKind::ChangeDirectory(e)
+            | ErrorKind::OpenPidfile(e)
+            | ErrorKind::LockPidfile(e)
+            | ErrorKind::OpenDeviceNull(e)
+            | ErrorKind::RedirectStreams(e)
+            | ErrorKind::CloseDeviceNull(e)
+            | ErrorKind::TruncatePidfile(e)
+            | ErrorKind::WritePid(e)
+            | ErrorKind::ReadPid(e) => Some(*e),
 
             ErrorKind::Io(io_err) => io_err.raw_os_error(),
 
             #[cfg(windows)]
-            ErrorKind::CreateProcessFailed(e) | ErrorKind::OpenProcessToken(e)
-            | ErrorKind::CreateMutexFailed(e) | ErrorKind::ReleaseMutexFailed(e)
-            | ErrorKind::SetStdHandleFailed(e) | ErrorKind::CreateFileFailed(e) => Some(*e),
+            ErrorKind::CreateProcessFailed(e)
+            | ErrorKind::OpenProcessToken(e)
+            | ErrorKind::CreateMutexFailed(e)
+            | ErrorKind::ReleaseMutexFailed(e)
+            | ErrorKind::SetStdHandleFailed(e)
+            | ErrorKind::CreateFileFailed(e) => Some(*e),
 
             #[cfg(windows)]
             ErrorKind::WindowsApiError { error_code, .. } => Some(*error_code as OsError),
@@ -255,7 +279,6 @@ macro_rules! impl_num_for_signed_integer {
 
 #[cfg(unix)]
 impl_num_for_signed_integer!(i8 i16 i32 i64 isize);
-
 
 #[cfg(unix)]
 pub fn get_last_os_error() -> OsError {

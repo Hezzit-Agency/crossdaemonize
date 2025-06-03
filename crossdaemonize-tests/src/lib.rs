@@ -139,7 +139,7 @@ impl Tester {
         self
     }
 
-    // --- FUNÇÃO run() MODIFICADA ---
+    // --- Modified run() function ---
     pub fn run(&mut self) -> Result<EnvData, Box<dyn std::error::Error>> {
         let temp_file = tempfile::NamedTempFile::new()
             .map_err(|e| format!("Failed to create temporary file for output: {}", e))?;
@@ -234,7 +234,7 @@ impl EnvData {
     }
 }
 
-// --- execute_tester_inner() MODIFICADA ---
+// --- Modified execute_tester_inner() ---
 pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     let log_file_path = "tester_debug.log";
     let mut log_file = OpenOptions::new()
@@ -291,11 +291,11 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
 
     writeln!(log_file, "[DEBUG - ARGS] Raw arguments received: {:?}", std::env::args().collect::<Vec<_>>()).ok();
 
-    // Loop para PARSEAR TODOS os argumentos
+    // Loop to parse all arguments
     while let Some(key) = args.next() {
         writeln!(log_file, "[DEBUG] Processing arg: {}", key).ok();
         daemonize_builder = match key.as_str() {
-            ARG_PID_FILE => { pid_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder }, // Passa o caminho, configurado depois
+            ARG_PID_FILE => { pid_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder }, // Pass the path, configured later
             ARG_CHOWN_PID_FILE => { chown_pid_file_passed = Some(read_value::<bool>(&mut args, &key)); daemonize_builder },
             ARG_WORKING_DIRECTORY => { working_directory_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
             ARG_USER_STRING => { user_string_passed = Some(read_value::<String>(&mut args, &key)); daemonize_builder },
@@ -396,7 +396,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
 
 
     writeln!(log_file, "[DEBUG] Calling daemonize.execute()").ok();
-    match daemonize_builder.execute(&mut dummy_handle) { // Usa o builder configurado
+    match daemonize_builder.execute(&mut dummy_handle) { // Use the configured builder
         Outcome::Parent(_) => {
             writeln!(log_file, "[DEBUG - PARENT] Daemonized process spawned. Exiting parent path.").ok();
             drop(write_pipe);

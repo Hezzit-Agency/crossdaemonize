@@ -242,6 +242,8 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to open log file {}: {}", log_file_path, e))?;
 
     writeln!(log_file, "[DEBUG - START] Tester started at {:?}", std::time::Instant::now()).ok();
+    writeln!(log_file, "[DEBUG - SYSTEM] OS: {}", std::env::consts::OS).ok();
+    writeln!(log_file, "[DEBUG - SYSTEM] Parent CWD: {:?}", std::env::current_dir().ok()).ok();
 
     let mut daemonize_builder = Daemonize::new(); // Este builder será configurado com os argumentos
 
@@ -328,6 +330,22 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(log_file, "[DEBUG] additional_file_passed after arg parsing: {:?}", additional_file_passed).ok();
     writeln!(log_file, "[DEBUG] pid_file_passed after arg parsing: {:?}", pid_file_passed).ok();
 
+    writeln!(
+        log_file,
+        "[DEBUG] summary - pid_file: {:?}, chown_pid_file: {:?}, working_directory: {:?}, user: {:?}, group: {:?}, umask: {:?}, chroot: {:?}, stdout: {:?}, stderr: {:?}, additional_file: {:?}, sleep_ms: {:?}, human_readable: {}",
+        pid_file_passed,
+        chown_pid_file_passed,
+        working_directory_passed,
+        user_string_passed,
+        group_string_passed,
+        umask_passed,
+        chroot_passed,
+        stdout_passed,
+        stderr_passed,
+        additional_file_passed,
+        sleep_ms_passed,
+        human_readable_passed
+    ).ok();
 
     // AGORA, CONFIGURE O DAEMONIZE_BUILDER COM BASE NOS ARGUMENTOS PARSEADOS
     // A maioria das configurações pode ser feita diretamente aqui.

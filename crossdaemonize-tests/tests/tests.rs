@@ -126,3 +126,29 @@ fn redirect_stream() {
     );
     assert_eq!(&std::fs::read_to_string(&stderr).unwrap(), STDERR_DATA);
 }
+#[test]
+fn complex_run() {
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let workdir = tmpdir.path().join("wd");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let stdout = tmpdir.path().join("stdout");
+    let stderr = tmpdir.path().join("stderr");
+    let pid = tmpdir.path().join("pidfile");
+    let additional = tmpdir.path().join("extra");
+
+    let result = Tester::new()
+        .working_directory(&workdir)
+        .stdout(&stdout)
+        .stderr(&stderr)
+        .pid_file(&pid)
+        .additional_file(&additional)
+        .sleep(std::time::Duration::from_millis(100))
+        .run();
+
+    assert!(result.is_ok(), "Complex run failed: {:?}", result.unwrap_err());
+    assert!(stdout.exists());
+    assert!(stderr.exists());
+    assert!(pid.exists());
+    assert!(additional.exists());
+}
+

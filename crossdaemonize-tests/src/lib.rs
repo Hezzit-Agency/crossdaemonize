@@ -42,9 +42,9 @@ pub const ADDITIONAL_FILE_DATA: &str = "additional file data";
 
 // Caminho para o executável tester.exe (localizado em examples/ dentro do seu próprio projeto)
 const TESTER_PATH: &str = if cfg!(windows) {
-    "./target/debug/examples/tester.exe"
+    "../target/debug/examples/tester.exe"
 } else {
-    "./target/debug/examples/tester"
+    "../target/debug/examples/tester"
 };
 
 const MAX_WAIT_DURATION: std::time::Duration = std::time::Duration::from_secs(5);

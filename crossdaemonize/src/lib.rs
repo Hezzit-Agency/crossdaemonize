@@ -51,7 +51,7 @@ use std::process::exit;
 cfg_if! {
     if #[cfg(unix)] {
         extern crate libc;
-        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::ffi::{OsStringExt, OsStrExt};
         use std::os::unix::io::{AsRawFd, RawFd};
         use std::env::set_current_dir;
         use std::ffi::CString;
@@ -86,6 +86,14 @@ cfg_if! {
 
 use self::error::ErrorKind;
 pub use self::error::Error;
+
+cfg_if! {
+    if #[cfg(windows)] {
+        type MutexHandle = HANDLE;
+    } else {
+        type MutexHandle = ();
+    }
+}
 
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -472,7 +480,7 @@ impl<T> Daemonize<T> {
         // porque o processo pai original simplesmente sai.
         // Ele é passado por consistência de assinatura, mas o valor é descartado.
         #[cfg(windows)]
-        let mut _windows_parent_mutex_handle_for_exit: Option<HANDLE> = None;
+        let mut _windows_parent_mutex_handle_for_exit: Option<MutexHandle> = None;
 
         let execution_result = {
             cfg_if! {
@@ -483,7 +491,7 @@ impl<T> Daemonize<T> {
                     // Para manter uma assinatura única para execute, podemos passar um dummy,
                     // ou ter cfged execute signatures.
                     // Por agora, mantemos a assinatura única e o Unix ignora o param.
-                    let mut dummy_mutex_handle_for_unix: Option<HANDLE> = None;
+                    let mut dummy_mutex_handle_for_unix: Option<MutexHandle> = None;
                     self.execute(&mut dummy_mutex_handle_for_unix)
                 }
             }
@@ -530,7 +538,7 @@ impl<T> Daemonize<T> {
 
     // Adicionado _ para silenciar o warning de unused_variables, já que a lógica atual
     // não faz com que execute() modifique este parâmetro para o chamador start().
-    pub fn execute(self, _parent_mutex_handle_storage: &mut Option<HANDLE>) -> Outcome<T> {
+    pub fn execute(self, _parent_mutex_handle_storage: &mut Option<MutexHandle>) -> Outcome<T> {
         cfg_if! {
             if #[cfg(unix)] {
                 // _parent_mutex_handle_storage é ignorado no Unix.
@@ -552,7 +560,7 @@ impl<T> Daemonize<T> {
                     }
                 }
             } else if #[cfg(windows)] {
-                let mut current_process_mutex: Option<HANDLE> = None;
+                let mut current_process_mutex: Option<MutexHandle> = None;
 
                 // Tenta adquirir o mutex se um pid_file for especificado.
                 // Isto serve como um "single instance lock" e verificação.
@@ -672,7 +680,7 @@ impl<T> Daemonize<T> {
     }
 
     #[cfg(windows)]
-    fn execute_child_windows(self, owned_child_mutex_handle: Option<HANDLE>) -> Result<T, ErrorKind> {
+    fn execute_child_windows(self, owned_child_mutex_handle: Option<MutexHandle>) -> Result<T, ErrorKind> {
         let mut mutex_to_manage = owned_child_mutex_handle;
 
         let dir_path_win: Vec<u16> = self.directory.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -1017,7 +1025,7 @@ fn relaunch_detached_windows() -> Result<u32, ErrorKind> {
 }
 
 #[cfg(windows)]
-fn create_pid_file_windows(path: &Path, acquire_lock_now: bool, mutex_handle_out: &mut Option<HANDLE>) -> Result<(), ErrorKind> {
+fn create_pid_file_windows(path: &Path, acquire_lock_now: bool, mutex_handle_out: &mut Option<MutexHandle>) -> Result<(), ErrorKind> {
     // Cria um nome de mutex único baseado no caminho do ficheiro.
     // Substitui caracteres inválidos para nomes de objetos do kernel.
     let mutex_name_str = path.to_string_lossy().replace(['\\', ':', '/'], "_");

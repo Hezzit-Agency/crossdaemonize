@@ -9,57 +9,40 @@
 * Unix-only options for user, group, umask and chroot
 * Suppression of unsupported warnings on Windows
 
-## Example (Unix)
+## Example
 ```rust
 use std::fs::File;
 use crossdaemonize::Daemonize;
+use tempfile::tempdir;
 
 fn main() {
-    let stdout = File::create("/tmp/daemon.out").unwrap();
-    let stderr = File::create("/tmp/daemon.err").unwrap();
+    let tmp = tempdir().expect("failed to create temporary directory");
+    let stdout = File::create(tmp.path().join("daemon.out")).unwrap();
+    let stderr = File::create(tmp.path().join("daemon.err")).unwrap();
+    let pid_file = tmp.path().join("daemon.pid");
 
     let daemonize = Daemonize::new()
-        .pid_file("/tmp/test.pid") // Every method except `new` and `start`
-        .chown_pid_file(true)      // is optional, see `Daemonize` documentation
-        .working_directory("/tmp") // for default behaviour.
+        .pid_file(&pid_file)
+        .working_directory(tmp.path())
+        .stdout(stdout)
+        .stderr(stderr);
+
+    #[cfg(unix)]
+    let daemonize = daemonize
         .user("nobody")
-        .group("daemon") // Group name
-        .group(2)        // or group id.
-        .umask(0o777)    // Set umask, `0o027` by default.
-        .stdout(stdout)  // Redirect stdout to `/tmp/daemon.out`.
-        .stderr(stderr)  // Redirect stderr to `/tmp/daemon.err`.
+        .group("daemon")
+        .umask(0o777)
         .privileged_action(|| "Executed before drop privileges");
 
-    match daemonize.start() {
-        Ok(_) => println!("Success, daemonized"),
-        Err(e) => eprintln!("Error, {}", e),
-    }
-}
-```
-
-## Example (Windows)
-```rust
-use std::fs::File;
-use crossdaemonize::Daemonize;
-
-fn main() {
-    let stdout = File::create("C:\\daemon.out").unwrap();
-    let stderr = File::create("C:\\daemon.err").unwrap();
-
-    Daemonize::new()
-        .pid_file("C:\\daemon.pid")
-        .working_directory("C:\\")
-        .stdout(stdout)
-        .stderr(stderr)
-        .suppress_unsupported_warnings(true)
+    daemonize
         .start()
         .expect("daemonize failed");
 }
 ```
 
+## Windows Limitations
 On Windows the library cannot change user, group, umask or perform `chroot`.
-Those methods are silently ignored unless `suppress_unsupported_warnings(false)`
-is used (the default).
+These methods are ignored unless `suppress_unsupported_warnings(false)` is used (default).
 
 ## License
 Licensed under either of

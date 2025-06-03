@@ -57,6 +57,10 @@ fn main() {
 }
 ```
 
+On Windows the library cannot change user, group, umask or perform `chroot`.
+Those methods are silently ignored unless `suppress_unsupported_warnings(false)`
+is used (the default).
+
 ## License
 Licensed under either of
 * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))

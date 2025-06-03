@@ -1,9 +1,14 @@
 [package]
 name = "crossdaemonize"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Cross-platform daemonization for Rust (Unix + Windows)"
+authors = ["Fedor Gogolev <knsd@knsd.net>"]
+description = "Cross-platform daemonization for Rust"
+documentation = "https://docs.rs/crossdaemonize"
+readme = "../README.md"
+keywords = ["daemon", "windows", "unix"]
+categories = ["os::unix-apis", "api-bindings"]
 repository = "https://github.com/knsd/crossdaemonize"
 
 [dependencies]

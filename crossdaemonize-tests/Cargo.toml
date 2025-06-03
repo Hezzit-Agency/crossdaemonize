@@ -1,9 +1,11 @@
 [package]
 name = "crossdaemonize-tests"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 publish = false
+authors = ["Fedor Gogolev <knsd@knsd.net>"]
 description = "Test suite for crossdaemonize"
+repository = "https://github.com/knsd/crossdaemonize"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

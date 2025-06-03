@@ -6,15 +6,9 @@ Here you can see the full list of changes between each crossdaemonize release.
 Version 0.6.0
 -------------
 
-Released on June 3, 2024
+Released on June 3, 2025
 
   * Initial Windows support and project rename to crossdaemonize
-
-Version 0.6.1
--------------
-
-Released on May 3, 2025
-
   * Improved documentation with detailed cross-platform examples
   * Updated workspace to Cargo resolver 2 to silence warnings
   * Minor code cleanups

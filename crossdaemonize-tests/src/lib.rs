@@ -146,6 +146,9 @@ impl Tester {
         let output_file_path = temp_file.path().to_path_buf();
         self._output_file_path = Some(output_file_path.clone());
 
+        // Remove the file so the daemonized child can create it with its own permissions
+        std::fs::remove_file(&output_file_path).ok();
+
         self.command.arg(ARG_OUTPUT_FILE).arg(&output_file_path);
 
         let mut child = self

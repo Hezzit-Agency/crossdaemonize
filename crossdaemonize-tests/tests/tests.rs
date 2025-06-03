@@ -6,6 +6,8 @@ extern crate tempfile;
 use crossdaemonize_tests::{Tester, STDOUT_DATA, STDERR_DATA};
 #[cfg(windows)]
 use crossdaemonize_tests::ADDITIONAL_FILE_DATA;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use tempfile::TempDir;
 
 #[test]
@@ -151,5 +153,53 @@ fn complex_run() {
     assert!(stderr.exists());
     assert!(pid.exists());
     assert!(additional.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn user_group_string() {
+    let result = Tester::new()
+        .user_string("nobody")
+        .group_string("daemon")
+        .run();
+    assert!(result.is_ok(), "user/group string test failed: {:?}", result.unwrap_err());
+    let env = result.unwrap();
+    assert_eq!(env.euid, 65534, "euid should drop to nobody");
+    assert_eq!(env.egid, 1, "egid should drop to daemon group");
+}
+
+#[cfg(unix)]
+#[test]
+fn user_group_numeric() {
+    let result = Tester::new()
+        .user_num(65534)
+        .group_num(1)
+        .run();
+    assert!(result.is_ok(), "user/group numeric test failed: {:?}", result.unwrap_err());
+    let env = result.unwrap();
+    assert_eq!(env.euid, 65534);
+    assert_eq!(env.egid, 1);
+}
+
+#[test]
+fn chown_pid_file() {
+    let tmpdir = TempDir::new().expect("Failed to create tmpdir for chown pid");
+    let pid_path = tmpdir.path().join("pidfile");
+
+    let result = Tester::new()
+        .pid_file(&pid_path)
+        .chown_pid_file(true)
+        .user_string("nobody")
+        .group_string("daemon")
+        .run();
+    assert!(result.is_ok(), "chown pidfile test failed: {:?}", result.unwrap_err());
+
+    #[cfg(unix)]
+    {
+        use std::fs::metadata;
+        let meta = metadata(&pid_path).unwrap();
+        assert_eq!(meta.uid(), 65534, "pid file uid should be nobody");
+        assert_eq!(meta.gid(), 1, "pid file gid should be daemon");
+    }
 }
 

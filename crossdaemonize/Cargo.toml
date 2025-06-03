@@ -1,14 +1,27 @@
 [package]
-name = "daemonize"
-version = "0.5.0"
-license = "MIT/Apache-2.0"
-authors = ["Fedor Gogolev <knsd@knsd.net>"]
-repository = "https://github.com/knsd/daemonize"
-documentation = "https://docs.rs/daemonize"
-readme = "../README.md"
-description = "Library to enable your code run as a daemon process on Unix-like systems."
-keywords = ["daemon", "daemonize", "unix"]
-categories = ["os::unix-apis"]
+name = "crossdaemonize"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Cross-platform daemonization for Rust (Unix + Windows)"
+repository = "https://github.com/seuusuario/crossdaemonize" # Altere para o link real se for publicar
 
 [dependencies]
+cfg-if = "1.0"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.98"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_WindowsProgramming"
+] }

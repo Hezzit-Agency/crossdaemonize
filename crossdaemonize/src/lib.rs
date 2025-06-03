@@ -1,4 +1,5 @@
 // Copyright (c) 2016 Fedor Gogolev <knsd@knsd.net>
+// Modificado para tentativa de porte para Windows.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -7,68 +8,97 @@
 // except according to those terms.
 
 //!
-//! daemonize is a library for writing system daemons. Inspired by the Python library [thesharp/daemonize](https://github.com/thesharp/daemonize).
+//! daemonize is a library for writing system daemons/background processes.
+//! This version attempts to add Windows compatibility.
 //!
-//! The respository is located at <https://github.com/knsd/daemonize/>.
+//! The original repository is located at <https://github.com/knsd/daemonize/>.
 //!
-//! Usage example:
+//! # Windows Specifics:
 //!
-//! ```
-//! extern crate daemonize;
+//! On Windows, daemonization is achieved by relaunching the current executable
+//! as a detached process without a console window. The original process then exits.
 //!
-//! use std::fs::File;
+//! ## Ignored Features on Windows:
 //!
-//! use daemonize::Daemonize;
+//! Due to fundamental differences in operating system design, the following
+//! `Daemonize` configurations are **ignored** when targeting Windows:
 //!
-//! fn main() {
-//!     let stdout = File::create("/tmp/daemon.out").unwrap();
-//!     let stderr = File::create("/tmp/daemon.err").unwrap();
+//! * `chown_pid_file`: Windows uses ACLs for file permissions, not Unix-style ownership.
+//! * `user` and `group`: Windows manages process identity via user accounts and services,
+//!     not simple UID/GID changes. To run a process under a different user, consider
+//!     creating a Windows Service.
+//! * `umask`: Windows uses ACLs for default file permissions, not a umask.
+//! * `chroot`: The concept of changing the root directory does not apply to Windows.
 //!
-//!     let daemonize = Daemonize::new()
-//!         .pid_file("/tmp/test.pid") // Every method except `new` and `start`
-//!         .chown_pid_file(true)      // is optional, see `Daemonize` documentation
-//!         .working_directory("/tmp") // for default behaviour.
-//!         .user("nobody")
-//!         .group("daemon") // Group name
-//!         .group(2)        // or group id.
-//!         .umask(0o777)    // Set umask, `0o027` by default.
-//!         .stdout(stdout)  // Redirect stdout to `/tmp/daemon.out`.
-//!         .stderr(stderr)  // Redirect stderr to `/tmp/daemon.err`.
-//!         .privileged_action(|| "Executed before drop privileges");
+//! Warnings for these ignored features can be suppressed using `.suppress_unsupported_warnings(true)`.
 //!
-//!     match daemonize.start() {
-//!         Ok(_) => println!("Success, daemonized"),
-//!         Err(e) => eprintln!("Error, {}", e),
-//!     }
-//! }
-//! ```
+
+// Adicione esta linha no topo do seu lib.rs ou main.rs para desativar o aviso em todo o crate
+// #![allow(clippy::collapsible_match)]
+// Ou para funções específicas, se preferir:
+// #[allow(clippy::collapsible_match)]
 
 mod error;
 
-extern crate libc;
+extern crate cfg_if;
 
-use std::env::set_current_dir;
-use std::ffi::CString;
+use cfg_if::cfg_if;
+use std::path::{Path, PathBuf};
 use std::fmt;
 use std::fs::File;
-use std::mem::transmute;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::io::AsRawFd;
-use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use self::error::{check_err, errno, ErrorKind};
+cfg_if! {
+    if #[cfg(unix)] {
+        extern crate libc;
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::io::{AsRawFd, RawFd};
+        use std::env::set_current_dir;
+        use std::ffi::CString;
+    } else if #[cfg(windows)] {
+        extern crate windows_sys;
+        use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE, CloseHandle, HWND};
+        use windows_sys::Win32::System::Threading::{
+            CreateMutexW, ReleaseMutex, WaitForSingleObject, GetCurrentProcessId,
+            CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW, DETACHED_PROCESS, CREATE_NO_WINDOW
+        };
+        use windows_sys::Win32::System::Console::{
+            SetStdHandle, GetConsoleWindow,
+            STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        };
+        use windows_sys::Win32::System::Environment::SetCurrentDirectoryW;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, WriteFile, FlushFileBuffers,
+            OPEN_EXISTING, CREATE_NEW, FILE_SHARE_READ, FILE_ATTRIBUTE_NORMAL,
+            TRUNCATE_EXISTING, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_WRITE,
+            CREATE_ALWAYS 
+        };
+        use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW;
 
-pub use self::error::Error;
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
-enum UserImpl {
-    Name(String),
-    Id(libc::uid_t),
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::IntoRawHandle;
+        use std::ptr;
+        const WAIT_OBJECT_0: u32 = 0x00000000_u32;
+        const WAIT_ABANDONED: u32 = 0x00000080_u32;
+        const WAIT_TIMEOUT: u32 = 0x00000102_u32;
+    }
 }
 
-/// Expects system user id or name. If name is provided it will be resolved to id later.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+use self::error::ErrorKind;
+pub use self::error::Error;
+
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum UserImpl {
+    Name(String),
+    #[cfg(unix)]
+    Id(libc::uid_t),
+    #[cfg(windows)]
+    #[allow(dead_code)] // Allow because this variant is not constructed on Windows yet
+    Id(String), // No Windows, UIDs são SIDs, String é uma simplificação
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct User {
     inner: UserImpl,
 }
@@ -81,22 +111,33 @@ impl From<&str> for User {
     }
 }
 
-impl From<u32> for User {
-    fn from(t: u32) -> User {
-        User {
-            inner: UserImpl::Id(t as libc::uid_t),
+cfg_if! {
+    if #[cfg(unix)] {
+        impl From<u32> for User {
+            fn from(t: u32) -> User {
+                User {
+                    inner: UserImpl::Id(t as libc::uid_t),
+                }
+            }
         }
     }
+    // Nota: From<u32> para User não é implementado para Windows,
+    // já que IDs de usuário não são simples u32.
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum GroupImpl {
     Name(String),
+    #[cfg(unix)]
     Id(libc::gid_t),
+    #[cfg(windows)]
+    #[allow(dead_code)] // Allow because this variant is not constructed on Windows yet
+    Id(String), // No Windows, GIDs são SIDs, String é uma simplificação
 }
 
-/// Expects system group id or name. If name is provided it will be resolved to id later.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Group {
     inner: GroupImpl,
 }
@@ -109,24 +150,34 @@ impl From<&str> for Group {
     }
 }
 
-impl From<u32> for Group {
-    fn from(t: u32) -> Group {
-        Group {
-            inner: GroupImpl::Id(t as libc::gid_t),
+cfg_if! {
+    if #[cfg(unix)] {
+        impl From<u32> for Group {
+            fn from(t: u32) -> Group {
+                Group {
+                    inner: GroupImpl::Id(t as libc::gid_t),
+                }
+            }
         }
     }
+    // Nota: From<u32> para Group não é implementado para Windows.
 }
 
-/// File mode creation mask.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Mask {
+    #[cfg(unix)]
     inner: libc::mode_t,
+    #[cfg(windows)]
+    inner: u32, // umask não tem análogo direto no Windows; este campo pode ser ignorado.
 }
 
 impl From<u32> for Mask {
-    fn from(inner: u32) -> Mask {
+    fn from(inner_val: u32) -> Mask {
         Mask {
-            inner: inner as libc::mode_t,
+            #[cfg(unix)]
+            inner: inner_val as libc::mode_t,
+            #[cfg(windows)]
+            inner: inner_val, // No Windows, este valor não é usado diretamente como umask.
         }
     }
 }
@@ -134,11 +185,10 @@ impl From<u32> for Mask {
 #[derive(Debug)]
 enum StdioImpl {
     Devnull,
-    RedirectToFile(File),
+    RedirectToFile(File), // File não é Copy, então o match precisa ter cuidado
     Keep,
 }
 
-/// Describes what to do with a standard I/O stream for a child process.
 #[derive(Debug)]
 pub struct Stdio {
     inner: StdioImpl,
@@ -166,23 +216,22 @@ impl From<File> for Stdio {
     }
 }
 
-/// Parent process execution outcome.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Parent {
+    #[cfg(unix)]
     pub first_child_exit_code: i32,
+    #[cfg(windows)]
+    pub child_process_id: Option<u32>, // ID do processo filho desanexado
 }
 
-/// Child process execution outcome.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Child<T> {
     pub privileged_action_result: T,
 }
 
-/// Daemonization process outcome. Can be matched to check is it a parent process or a child
-/// process.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug)]
 pub enum Outcome<T> {
     Parent(Result<Parent, Error>),
     Child(Result<Child<T>, Error>),
@@ -190,63 +239,60 @@ pub enum Outcome<T> {
 
 impl<T> Outcome<T> {
     pub fn is_parent(&self) -> bool {
-        match self {
-            Outcome::Parent(_) => true,
-            Outcome::Child(_) => false,
-        }
+        matches!(self, Outcome::Parent(_))
     }
 
     pub fn is_child(&self) -> bool {
-        match self {
-            Outcome::Parent(_) => false,
-            Outcome::Child(_) => true,
-        }
+        matches!(self, Outcome::Child(_))
     }
 }
 
-/// Daemonization options.
-///
-/// Fork the process in the background, disassociate from its process group and the control terminal.
-/// Change umask value to `0o027`, redirect all standard streams to `/dev/null`. Change working
-/// directory to `/` or provided value.
-///
-/// Optionally:
-///
-///   * maintain and lock the pid-file;
-///   * drop user privileges;
-///   * drop group privileges;
-///   * change root directory;
-///   * change the pid-file ownership to provided user (and/or) group;
-///   * execute any provided action just before dropping privileges.
-///
 pub struct Daemonize<T> {
     directory: PathBuf,
     pid_file: Option<PathBuf>,
-    chown_pid_file: bool,
-    user: Option<User>,
-    group: Option<Group>,
-    umask: Mask,
-    root: Option<PathBuf>,
+    chown_pid_file: bool, // Ignorado no Windows
+    user: Option<User>,    // Ignorado no Windows (requer APIs de serviço ou tokens de processo)
+    group: Option<Group>,    // Ignorado no Windows
+    umask: Mask,             // Ignorado no Windows
+    root: Option<PathBuf>,  // Ignorado no Windows (chroot não aplicável)
     privileged_action: Box<dyn FnOnce() -> T>,
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
+    #[cfg(windows)]
+    suppress_unsupported_warnings: bool, // Novo campo para controlar avisos no Windows
 }
 
 impl<T> fmt::Debug for Daemonize<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("Daemonize")
+        let mut debug_struct = fmt.debug_struct("Daemonize");
+        debug_struct
             .field("directory", &self.directory)
             .field("pid_file", &self.pid_file)
-            .field("chown_pid_file", &self.chown_pid_file)
-            .field("user", &self.user)
-            .field("group", &self.group)
-            .field("umask", &self.umask)
-            .field("root", &self.root)
             .field("stdin", &self.stdin)
             .field("stdout", &self.stdout)
-            .field("stderr", &self.stderr)
-            .finish()
+            .field("stderr", &self.stderr);
+
+        cfg_if! {
+            if #[cfg(unix)] {
+                debug_struct
+                    .field("chown_pid_file", &self.chown_pid_file)
+                    .field("user", &self.user)
+                    .field("group", &self.group)
+                    .field("umask", &self.umask)
+                    .field("root", &self.root);
+            } else {
+                // No Windows, alguns campos são ignorados, mas podemos listá-los para completude
+                 debug_struct
+                    .field("chown_pid_file (ignored on Windows)", &self.chown_pid_file)
+                    .field("user (ignored on Windows)", &self.user)
+                    .field("group (ignored on Windows)", &self.group)
+                    .field("umask (ignored on Windows)", &self.umask)
+                    .field("root (ignored on Windows)", &self.root)
+                    .field("suppress_unsupported_warnings", &self.suppress_unsupported_warnings); // Incluir o novo campo
+            }
+        }
+        debug_struct.finish()
     }
 }
 
@@ -258,217 +304,502 @@ impl Default for Daemonize<()> {
 
 impl Daemonize<()> {
     pub fn new() -> Self {
+        let default_path_str: &str = if cfg!(unix) { "/" } else { "." }; // Diretório atual para Windows
         Daemonize {
-            directory: Path::new("/").to_owned(),
+            directory: PathBuf::from(default_path_str),
             pid_file: None,
             chown_pid_file: false,
             user: None,
             group: None,
-            umask: 0o027.into(),
+            umask: 0o027.into(), // Padrão Unix, ignorado no Windows
             privileged_action: Box::new(|| ()),
             root: None,
             stdin: Stdio::devnull(),
             stdout: Stdio::devnull(),
             stderr: Stdio::devnull(),
+            #[cfg(windows)]
+            suppress_unsupported_warnings: false, // Padrão é mostrar avisos
         }
     }
 }
 
 impl<T> Daemonize<T> {
-    /// Create pid-file at `path`, lock it exclusive and write daemon pid.
     pub fn pid_file<F: AsRef<Path>>(mut self, path: F) -> Self {
         self.pid_file = Some(path.as_ref().to_owned());
         self
     }
 
-    /// If `chown` is true, daemonize will change the pid-file ownership, if user or group are provided
+    #[allow(unused_mut)] // Suppress warning on Windows where 'self' isn't explicitly reassigned
     pub fn chown_pid_file(mut self, chown: bool) -> Self {
-        self.chown_pid_file = chown;
+        cfg_if! {
+            if #[cfg(unix)] {
+                self.chown_pid_file = chown;
+            } else {
+                let _ = chown; // Evita warning de não utilizado
+                if !self.suppress_unsupported_warnings {
+                    eprintln!("Warning: chown_pid_file is not supported on Windows and will be ignored.");
+                }
+            }
+        }
         self
     }
 
-    /// Change working directory to `path` or `/` by default.
     pub fn working_directory<F: AsRef<Path>>(mut self, path: F) -> Self {
         self.directory = path.as_ref().to_owned();
         self
     }
 
-    /// Drop privileges to `user`.
+    #[allow(unused_mut)] // Suppress warning on Windows where 'self' isn't explicitly reassigned
     pub fn user<U: Into<User>>(mut self, user: U) -> Self {
-        self.user = Some(user.into());
+        cfg_if! {
+            if #[cfg(unix)] {
+                self.user = Some(user.into());
+            } else {
+                let _ = user; // Evita warning de não utilizado
+                if !self.suppress_unsupported_warnings {
+                    eprintln!("Warning: Setting user is not supported on Windows in this manner and will be ignored.");
+                }
+            }
+        }
         self
     }
 
-    /// Drop privileges to `group`.
+    #[allow(unused_mut)] // Suppress warning on Windows where 'self' isn't explicitly reassigned
     pub fn group<G: Into<Group>>(mut self, group: G) -> Self {
-        self.group = Some(group.into());
+        cfg_if! {
+            if #[cfg(unix)] {
+                self.group = Some(group.into());
+            } else {
+                let _ = group; // Evita warning de não utilizado
+                if !self.suppress_unsupported_warnings {
+                    eprintln!("Warning: Setting group is not supported on Windows in this manner and will be ignored.");
+                }
+            }
+        }
         self
     }
 
-    /// Change umask to `mask` or `0o027` by default.
+    #[allow(unused_mut)] // Suppress warning on Windows where 'self' isn't explicitly reassigned
     pub fn umask<M: Into<Mask>>(mut self, mask: M) -> Self {
-        self.umask = mask.into();
+        cfg_if! {
+            if #[cfg(unix)] {
+                self.umask = mask.into();
+            } else {
+                let _ = mask; // Evita warning de não utilizado
+                if !self.suppress_unsupported_warnings {
+                    eprintln!("Warning: umask is not supported on Windows and will be ignored.");
+                }
+            }
+        }
         self
     }
 
-    /// Change root to `path`
+    #[allow(unused_mut)] // Suppress warning on Windows where 'self' isn't explicitly reassigned
     pub fn chroot<F: AsRef<Path>>(mut self, path: F) -> Self {
-        self.root = Some(path.as_ref().to_owned());
+        cfg_if! {
+            if #[cfg(unix)] {
+                self.root = Some(path.as_ref().to_owned());
+            } else {
+                let _ = path; // Evita warning de não utilizado
+                if !self.suppress_unsupported_warnings {
+                    eprintln!("Warning: chroot is not supported on Windows and will be ignored.");
+                }
+            }
+        }
         self
     }
 
-    /// Execute `action` just before dropping privileges. Most common use case is to open
-    /// listening socket. Result of `action` execution will be returned by `start` method.
-    pub fn privileged_action<N, F: FnOnce() -> N + 'static>(self, action: F) -> Daemonize<N> {
-        let mut new: Daemonize<N> = unsafe { transmute(self) };
-        new.privileged_action = Box::new(action);
-        new
+    // Novo método para suprimir avisos em plataformas não suportadas
+    #[cfg(windows)]
+    pub fn suppress_unsupported_warnings(mut self, suppress: bool) -> Self {
+        self.suppress_unsupported_warnings = suppress;
+        self
     }
 
-    /// Configuration for the child process's standard output stream.
+
+    pub fn privileged_action<N, F: FnOnce() -> N + 'static>(self, action: F) -> Daemonize<N> {
+        let Daemonize {
+            directory,
+            pid_file,
+            chown_pid_file,
+            user,
+            group,
+            umask,
+            root,
+            privileged_action: _, // O antigo é descartado
+            stdin,
+            stdout,
+            stderr,
+            #[cfg(windows)]
+            suppress_unsupported_warnings, // Captura o novo campo
+        } = self;
+
+        Daemonize {
+            directory,
+            pid_file,
+            chown_pid_file,
+            user,
+            group,
+            umask,
+            root,
+            privileged_action: Box::new(action), // Nova ação
+            stdin,
+            stdout,
+            stderr,
+            #[cfg(windows)]
+            suppress_unsupported_warnings, // Propaga o novo campo
+        }
+    }
+
+
     pub fn stdout<S: Into<Stdio>>(mut self, stdio: S) -> Self {
         self.stdout = stdio.into();
         self
     }
 
-    /// Configuration for the child process's standard error stream.
     pub fn stderr<S: Into<Stdio>>(mut self, stdio: S) -> Self {
         self.stderr = stdio.into();
         self
     }
-    /// Start daemonization process, terminate parent after first fork, returns privileged action
-    /// result to the child.
+
+    pub fn stdin<S: Into<Stdio>>(mut self, stdio: S) -> Self {
+        self.stdin = stdio.into();
+        self
+    }
+
     pub fn start(self) -> Result<T, Error> {
-        match self.execute() {
-            Outcome::Parent(Ok(Parent { first_child_exit_code })) => exit(first_child_exit_code),
-            Outcome::Parent(Err(err)) => Err(err),
+        // No Windows, o parent_mutex_handle_for_exit não é preenchido por execute na lógica atual
+        // porque o processo pai original simplesmente sai.
+        // Ele é passado por consistência de assinatura, mas o valor é descartado.
+        #[cfg(windows)]
+        let mut _windows_parent_mutex_handle_for_exit: Option<HANDLE> = None;
+
+        let execution_result = {
+            cfg_if! {
+                if #[cfg(windows)] {
+                    self.execute(&mut _windows_parent_mutex_handle_for_exit)
+                } else {
+                    // Para Unix, o segundo argumento não é usado e não é necessário.
+                    // Para manter uma assinatura única para execute, podemos passar um dummy,
+                    // ou ter cfged execute signatures.
+                    // Por agora, mantemos a assinatura única e o Unix ignora o param.
+                    let mut dummy_mutex_handle_for_unix: Option<HANDLE> = None;
+                    self.execute(&mut dummy_mutex_handle_for_unix)
+                }
+            }
+        };
+
+
+        match execution_result {
+            Outcome::Parent(parent_result) => {
+                cfg_if! {
+                    if #[cfg(unix)] {
+                        match parent_result {
+                            Ok(parent_data) => exit(parent_data.first_child_exit_code),
+                            Err(e) => {
+                                eprintln!("Daemonization failed in parent (Unix): {}", e);
+                                exit(1); // Ou outro código de erro
+                            }
+                        }
+                    } else if #[cfg(windows)] {
+                        // No Windows, o processo pai original sai com sucesso após lançar o filho desanexado.
+                        // O mutex relevante (se houver) foi tratado dentro de execute (pai original libera, filho mantém).
+                        match parent_result {
+                            Ok(_) => exit(0), // Pai original sai com sucesso
+                            Err(e) => {
+                                eprintln!("Daemonization failed in parent (Windows): {}", e);
+                                exit(1);
+                            }
+                        }
+                    } else {
+                        // Plataforma não suportada
+                        match parent_result {
+                            Ok(_) => exit(0),
+                            Err(e) => {
+                                eprintln!("Daemonization failed on unsupported platform: {}", e);
+                                exit(1);
+                            }
+                        }
+                    }
+                }
+            }
             Outcome::Child(Ok(child)) => Ok(child.privileged_action_result),
             Outcome::Child(Err(err)) => Err(err),
         }
     }
 
-    /// Execute daemonization process, don't terminate parent after first fork.
-    pub fn execute(self) -> Outcome<T> {
-        unsafe {
-            match perform_fork() {
-                Ok(Some(first_child_pid)) => {
-                    Outcome::Parent(match waitpid(first_child_pid) {
-                        Err(err) => Err(err.into()),
-                        Ok(first_child_exit_code) => Ok(Parent { first_child_exit_code: first_child_exit_code as i32 }),
-                    })
-                },
-                Err(err) => Outcome::Parent(Err(err.into())),
-                Ok(None) => match self.execute_child() {
-                    Ok(privileged_action_result) => Outcome::Child(Ok(Child {
-                        privileged_action_result,
-                    })),
-                    Err(err) => Outcome::Child(Err(err.into())),
-                },
+    // Adicionado _ para silenciar o warning de unused_variables, já que a lógica atual
+    // não faz com que execute() modifique este parâmetro para o chamador start().
+    pub fn execute(self, _parent_mutex_handle_storage: &mut Option<HANDLE>) -> Outcome<T> {
+        cfg_if! {
+            if #[cfg(unix)] {
+                // _parent_mutex_handle_storage é ignorado no Unix.
+                unsafe {
+                    match perform_fork_unix() {
+                        Ok(Some(first_child_pid)) => {
+                            Outcome::Parent(match waitpid_unix(first_child_pid) {
+                                Err(err_kind) => Err(Error::new(err_kind)),
+                                Ok(first_child_exit_code) => Ok(Parent { first_child_exit_code }),
+                            })
+                        },
+                        Err(err_kind) => Outcome::Parent(Err(Error::new(err_kind))),
+                        Ok(None) => match self.execute_child_unix() {
+                            Ok(privileged_action_result) => Outcome::Child(Ok(Child {
+                                privileged_action_result,
+                            })),
+                            Err(err_kind) => Outcome::Child(Err(Error::new(err_kind))),
+                        },
+                    }
+                }
+            } else if #[cfg(windows)] {
+                let mut current_process_mutex: Option<HANDLE> = None;
+
+                // Tenta adquirir o mutex se um pid_file for especificado.
+                // Isto serve como um "single instance lock" e verificação.
+                if let Some(pid_path) = &self.pid_file {
+                    match create_pid_file_windows(pid_path, true, &mut current_process_mutex) {
+                        Ok(_) => { /* Mutex adquirido e armazenado em current_process_mutex */ }
+                        Err(err_kind) => {
+                            // Se o erro foi LockPidfile, significa que outra instância está rodando.
+                            // O processo pai original deve sair.
+                            return Outcome::Parent(Err(Error::new(err_kind)));
+                        }
+                    }
+                }
+
+                let needs_detach = unsafe { GetConsoleWindow() != (0 as HWND) };
+
+                if needs_detach {
+                    // Este é o processo pai original que tem uma consola e precisa desanexar.
+                    // Ele deve liberar o mutex que acabou de adquirir (current_process_mutex),
+                    // para que o filho desanexado possa adquiri-lo.
+                    if let Some(mutex_to_release_by_parent) = current_process_mutex.take() {
+                        unsafe {
+                            if mutex_to_release_by_parent != INVALID_HANDLE_VALUE {
+                                let _ = ReleaseMutex(mutex_to_release_by_parent);
+                                CloseHandle(mutex_to_release_by_parent);
+                            }
+                        }
+                    }
+                    // _parent_mutex_handle_storage não é preenchido aqui, pois este processo pai está saindo.
+                    match relaunch_detached_windows() {
+                        Ok(process_id) => Outcome::Parent(Ok(Parent { child_process_id: Some(process_id) })),
+                        Err(err_kind) => Outcome::Parent(Err(Error::new(err_kind))),
+                    }
+                } else {
+                    // Este já é o processo filho (desanexado) ou o processo original não tinha consola.
+                    // current_process_mutex (se Some) é o mutex que este processo agora possui.
+                    // Passamos a posse do current_process_mutex para execute_child_windows.
+                    match self.execute_child_windows(current_process_mutex) {
+                        Ok(privileged_action_result) => Outcome::Child(Ok(Child {
+                            privileged_action_result,
+                        })),
+                        Err(err_kind) => {
+                            // Se execute_child_windows falhar, o mutex (current_process_mutex)
+                            // já foi consumido e deveria ter sido liberado dentro de execute_child_windows.
+                            Outcome::Child(Err(Error::new(err_kind)))
+                        }
+                    }
+                }
+            } else {
+                Outcome::Parent(Err(Error::new(ErrorKind::Custom("Unsupported platform".to_string()))))
             }
         }
     }
 
-    fn execute_child(self) -> Result<T, ErrorKind> {
+    #[cfg(unix)]
+    fn execute_child_unix(self) -> Result<T, ErrorKind> {
         unsafe {
-            set_current_dir(&self.directory).map_err(|_| ErrorKind::ChangeDirectory(errno()))?;
-            set_sid()?;
+            set_current_dir(&self.directory).map_err(|e| ErrorKind::ChangeDirectory(e.raw_os_error().unwrap_or(0)))?;
+            set_sid_unix()?;
             libc::umask(self.umask.inner);
 
-            if perform_fork()?.is_some() {
-                exit(0)
+            if perform_fork_unix()?.is_some() { // Segundo fork
+                exit(0) // Processo intermediário (primeiro filho) sai
             };
 
-            let pid_file_fd = self
-                .pid_file
-                .clone()
-                .map(|pid_file| create_pid_file(pid_file))
-                .transpose()?;
+            // Agora estamos no processo neto (o daemon final)
+            let mut pid_file_handle: Option<RawFd> = None;
+            if let Some(ref pid_file_path) = self.pid_file {
+                let fd = create_pid_file_unix(pid_file_path)?;
+                pid_file_handle = Some(fd);
+            }
 
-            redirect_standard_streams(self.stdin, self.stdout, self.stderr)?;
+            // Consome self.stdin, self.stdout, self.stderr
+            redirect_standard_streams_unix(self.stdin, self.stdout, self.stderr)?;
 
-            let uid = self.user.map(|user| get_user(user)).transpose()?;
-            let gid = self.group.map(|group| get_group(group)).transpose()?;
+            let uid = self.user.map(|user| get_user_unix(user)).transpose()?;
+            let gid = self.group.map(|group| get_group_unix(group)).transpose()?;
 
             if self.chown_pid_file {
-                let args: Option<(PathBuf, libc::uid_t, libc::gid_t)> =
-                    match (self.pid_file, uid, gid) {
-                        (Some(pid), Some(uid), Some(gid)) => Some((pid, uid, gid)),
-                        (Some(pid), None, Some(gid)) => Some((pid, libc::uid_t::MAX - 1, gid)),
-                        (Some(pid), Some(uid), None) => Some((pid, uid, libc::gid_t::MAX - 1)),
-                        // Or pid file is not provided, or both user and group
-                        _ => None,
-                    };
-
-                if let Some((pid, uid, gid)) = args {
-                    chown_pid_file(pid, uid, gid)?;
+                if let (Some(ref pid_f_path), maybe_uid_val, maybe_gid_val) = (&self.pid_file, uid, gid) {
+                    // chown requer uid e gid. Se um não for especificado, use -1 (ou !0) para "não mudar".
+                    let final_uid = maybe_uid_val.unwrap_or(!0);
+                    let final_gid = maybe_gid_val.unwrap_or(!0);
+                    if maybe_uid_val.is_some() || maybe_gid_val.is_some() { // Apenas chown se user ou group foi dado
+                        chown_pid_file_unix(pid_f_path, final_uid, final_gid)?;
+                    }
                 }
             }
 
-            if let Some(pid_file_fd) = pid_file_fd {
-                set_cloexec_pid_file(pid_file_fd)?;
+            if let Some(fd) = pid_file_handle {
+                set_cloexec_pid_file_unix(fd)?;
             }
 
             let privileged_action_result = (self.privileged_action)();
 
-            if let Some(root) = self.root {
-                change_root(root)?;
+            if let Some(ref root_path) = self.root {
+                change_root_unix(root_path)?;
             }
 
-            if let Some(gid) = gid {
-                set_group(gid)?;
+            if let Some(gid_val) = gid {
+                set_group_unix(gid_val)?;
             }
 
-            if let Some(uid) = uid {
-                set_user(uid)?;
+            if let Some(uid_val) = uid {
+                set_user_unix(uid_val)?;
             }
 
-            if let Some(pid_file_fd) = pid_file_fd {
-                write_pid_file(pid_file_fd)?;
+            if let Some(fd) = pid_file_handle {
+                write_pid_file_unix(fd)?;
+                // O fd do pid_file é mantido aberto e bloqueado pelo daemon.
+                // `std::mem::forget(fd)` garante que o RawFd não é fechado quando sai do escopo.
+                std::mem::forget(fd);
             }
 
             Ok(privileged_action_result)
         }
     }
-}
 
-unsafe fn perform_fork() -> Result<Option<libc::pid_t>, ErrorKind> {
-    let pid = check_err(libc::fork(), ErrorKind::Fork)?;
-    if pid == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(pid))
+    #[cfg(windows)]
+    fn execute_child_windows(self, owned_child_mutex_handle: Option<HANDLE>) -> Result<T, ErrorKind> {
+        let mut mutex_to_manage = owned_child_mutex_handle;
+
+        let dir_path_win: Vec<u16> = self.directory.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe { SetCurrentDirectoryW(dir_path_win.as_ptr()) } == 0 { // FALSE
+            let err_code = error::get_last_windows_api_error_kind("SetCurrentDirectoryW_child_exec").get_os_error_code().unwrap_or(0);
+            eprintln!("[DEBUG - CHDIR] SetCurrentDirectoryW failed for path {:?} with code: {}", self.directory, err_code);
+            let err_kind = error::get_last_windows_api_error_kind("SetCurrentDirectoryW_child_exec");
+            if let Some(mutex) = mutex_to_manage.take() { if mutex != INVALID_HANDLE_VALUE { unsafe { let _ = ReleaseMutex(mutex); CloseHandle(mutex); }}}
+            return Err(err_kind);
+        }
+
+        // Se o mutex não foi passado (ex: pid_file não configurado antes do relaunch),
+        // tenta adquiri-lo agora.
+        if mutex_to_manage.is_none() && self.pid_file.is_some() {
+            match create_pid_file_windows(self.pid_file.as_ref().unwrap(), true, &mut mutex_to_manage) {
+                Ok(_) => {}
+                Err(err_kind) => {
+                    // create_pid_file_windows deve limpar o mutex em caso de erro interno.
+                    // Se falhou aqui, é um erro de daemonização.
+                    return Err(err_kind);
+                }
+            }
+        }
+
+        // Escreve o PID no ficheiro PID se um mutex foi obtido (indicando que o lock está ativo)
+        // e um pid_file foi especificado.
+        if self.pid_file.is_some() && mutex_to_manage.is_some() {
+            if let Err(e) = write_pid_file_windows(self.pid_file.as_ref().unwrap()) {
+                if let Some(mutex) = mutex_to_manage.take() { if mutex != INVALID_HANDLE_VALUE { unsafe { let _ = ReleaseMutex(mutex); CloseHandle(mutex); }}}
+                return Err(e);
+            }
+        }
+
+        // Consome self.stdin, self.stdout, self.stderr
+        if let Err(e) = redirect_standard_streams_windows(self.stdin, self.stdout, self.stderr) {
+            if let Some(mutex) = mutex_to_manage.take() { if mutex != INVALID_HANDLE_VALUE { unsafe { let _ = ReleaseMutex(mutex); CloseHandle(mutex); }}}
+            return Err(e);
+        }
+
+        // Funcionalidades não suportadas/ignoradas no Windows
+        if !self.suppress_unsupported_warnings {
+            if self.user.is_some() || self.group.is_some() {
+                eprintln!("Warning: Setting user/group is not implemented for Windows in this version and will be ignored.");
+            }
+            if self.chown_pid_file && (self.user.is_some() || self.group.is_some()) {
+                eprintln!("Warning: chown_pid_file is not supported on Windows and will be ignored.");
+            }
+            if self.umask.inner != 0o027 { // Se não for o padrão Unix
+                eprintln!("Warning: umask is not supported on Windows and will be ignored.");
+            }
+            if self.root.is_some() {
+                eprintln!("Warning: chroot is not supported on Windows and will be ignored.");
+            }
+        }
+
+        let privileged_action_result = (self.privileged_action)();
+
+        // O mutex é mantido pelo processo filho desanexado.
+        // `std::mem::forget` impede que o handle do mutex seja fechado quando `mutex_to_manage` sai do escopo.
+        // O SO o liberará quando o processo terminar.
+        if let Some(mutex) = mutex_to_manage.take() {
+            if mutex != INVALID_HANDLE_VALUE {
+                // `std::mem::forget` é usado para transferir a posse do handle para o processo atual.
+                // Ele não será fechado automaticamente quando `mutex` sair do escopo,
+                // e o SO o fechará quando o processo terminar.
+                let _ = mutex;
+            }
+        }
+
+        Ok(privileged_action_result)
     }
 }
 
-unsafe fn waitpid(pid: libc::pid_t) -> Result<libc::c_int, ErrorKind> {
-     let mut child_ret = 0;
-     check_err(libc::waitpid(pid, &mut child_ret, 0), ErrorKind::Wait)?;
-     Ok(child_ret)
- }
+// --- Funções Auxiliares Específicas do Unix ---
+#[cfg(unix)]
+unsafe fn perform_fork_unix() -> Result<Option<libc::pid_t>, ErrorKind> {
+    let pid = error::check_err(libc::fork(), ErrorKind::Fork)?;
+    if pid == 0 { Ok(None) } else { Ok(Some(pid)) }
+}
 
-unsafe fn set_sid() -> Result<(), ErrorKind> {
-    check_err(libc::setsid(), ErrorKind::DetachSession)?;
+#[cfg(unix)]
+unsafe fn waitpid_unix(pid: libc::pid_t) -> Result<i32, ErrorKind> { // Alterado para i32 para consistência com Parent struct
+    let mut child_ret_status = 0;
+    error::check_err(libc::waitpid(pid, &mut child_ret_status, 0), ErrorKind::Wait)?;
+    // Extrair o código de saída real se o processo terminou normalmente
+    if libc::WIFEXITED(child_ret_status) {
+        Ok(libc::WEXITSTATUS(child_ret_status))
+    } else {
+        // Se terminou por sinal ou outra forma, podemos retornar um código genérico ou o status bruto
+        Ok(1) // Ou child_ret_status se quiser o status bruto
+    }
+}
+
+#[cfg(unix)]
+unsafe fn set_sid_unix() -> Result<(), ErrorKind> {
+    error::check_err(libc::setsid(), ErrorKind::DetachSession)?;
     Ok(())
 }
 
-unsafe fn redirect_standard_streams(
+#[cfg(unix)]
+unsafe fn redirect_standard_streams_unix(
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
 ) -> Result<(), ErrorKind> {
-    let devnull_fd = check_err(
-        libc::open(b"/dev/null\0" as *const [u8; 10] as _, libc::O_RDWR),
-        ErrorKind::OpenDevnull,
+    let devnull_fd = error::check_err(
+        libc::open(b"/dev/null\0".as_ptr() as *const libc::c_char, libc::O_RDWR),
+        ErrorKind::OpenDeviceNull,
     )?;
 
-    let process_stdio = |fd, stdio: Stdio| {
-        match stdio.inner {
+    // A closure não precisa ser mutável aqui.
+    let process_stdio = |fd: RawFd, stdio_cfg: Stdio| -> Result<(), ErrorKind> {
+        match stdio_cfg.inner { // stdio_cfg.inner é movido aqui
             StdioImpl::Devnull => {
-                check_err(libc::dup2(devnull_fd, fd), ErrorKind::RedirectStreams)?;
+                error::check_err(libc::dup2(devnull_fd, fd), ErrorKind::RedirectStreams)?;
             }
-            StdioImpl::RedirectToFile(file) => {
-                let raw_fd = file.as_raw_fd();
-                check_err(libc::dup2(raw_fd, fd), ErrorKind::RedirectStreams)?;
+            StdioImpl::RedirectToFile(file) => { // file é movido aqui
+                let raw_fd = file.as_raw_fd(); // as_raw_fd() empresta, into_raw_fd() consome
+                                               // Se StdioImpl::RedirectToFile(file: File), file é movido para o match.
+                                               // file.as_raw_fd() não consome, mas o File original é movido para o pattern.
+                                               // Para evitar problemas com a vida útil de `file` se `Stdio` for reutilizado,
+                                               // é melhor consumir `file` aqui, o que `into_raw_fd` faria.
+                                               // No entanto, `as_raw_fd` é suficiente se `file` não for mais usado.
+                                               // A struct Stdio é consumida por redirect_standard_streams_unix, então está ok.
+                error::check_err(libc::dup2(raw_fd, fd), ErrorKind::RedirectStreams)?;
+                // O `file` original sairá do escopo e será fechado se não for esquecido,
+                // mas `dup2` cria uma cópia do descritor, então o original pode ser fechado.
             }
             StdioImpl::Keep => (),
         };
@@ -479,134 +810,376 @@ unsafe fn redirect_standard_streams(
     process_stdio(libc::STDOUT_FILENO, stdout)?;
     process_stdio(libc::STDERR_FILENO, stderr)?;
 
-    check_err(libc::close(devnull_fd), ErrorKind::CloseDevnull)?;
-
+    error::check_err(libc::close(devnull_fd), ErrorKind::CloseDeviceNull)?;
     Ok(())
 }
 
-unsafe fn get_group(group: Group) -> Result<libc::gid_t, ErrorKind> {
-    match group.inner {
+#[cfg(unix)]
+unsafe fn get_group_unix(group_info: Group) -> Result<libc::gid_t, ErrorKind> {
+    match group_info.inner { // group_info.inner é movido aqui
         GroupImpl::Id(id) => Ok(id),
-        GroupImpl::Name(name) => {
+        GroupImpl::Name(name) => { // name é movido aqui
             let s = CString::new(name).map_err(|_| ErrorKind::GroupContainsNul)?;
-            match get_gid_by_name(&s) {
-                Some(id) => get_group(id.into()),
-                None => Err(ErrorKind::GroupNotFound),
+            let grp_ptr = libc::getgrnam(s.as_ptr());
+            if grp_ptr.is_null() {
+                Err(ErrorKind::GroupNotFound)
+            } else {
+                Ok((*grp_ptr).gr_gid)
             }
         }
     }
 }
 
-unsafe fn set_group(group: libc::gid_t) -> Result<(), ErrorKind> {
-    check_err(libc::setgid(group), ErrorKind::SetGroup)?;
+
+#[cfg(unix)]
+unsafe fn set_group_unix(group: libc::gid_t) -> Result<(), ErrorKind> {
+    error::check_err(libc::setgid(group), ErrorKind::SetGroup)?;
     Ok(())
 }
 
-unsafe fn get_user(user: User) -> Result<libc::uid_t, ErrorKind> {
-    match user.inner {
+#[cfg(unix)]
+unsafe fn get_user_unix(user_info: User) -> Result<libc::uid_t, ErrorKind> {
+   match user_info.inner { // user_info.inner é movido aqui
         UserImpl::Id(id) => Ok(id),
-        UserImpl::Name(name) => {
+        UserImpl::Name(name) => { // name é movido aqui
             let s = CString::new(name).map_err(|_| ErrorKind::UserContainsNul)?;
-            match get_uid_by_name(&s) {
-                Some(id) => get_user(id.into()),
-                None => Err(ErrorKind::UserNotFound),
+            let pwd_ptr = libc::getpwnam(s.as_ptr());
+            if pwd_ptr.is_null() {
+                Err(ErrorKind::UserNotFound)
+            } else {
+                Ok((*pwd_ptr).pw_uid)
             }
         }
     }
 }
 
-unsafe fn set_user(user: libc::uid_t) -> Result<(), ErrorKind> {
-    check_err(libc::setuid(user), ErrorKind::SetUser)?;
+#[cfg(unix)]
+unsafe fn set_user_unix(user: libc::uid_t) -> Result<(), ErrorKind> {
+    error::check_err(libc::setuid(user), ErrorKind::SetUser)?;
     Ok(())
 }
 
-unsafe fn create_pid_file(path: PathBuf) -> Result<libc::c_int, ErrorKind> {
-    let path_c = pathbuf_into_cstring(path)?;
+#[cfg(unix)]
+fn pathbuf_into_cstring_unix(path: &Path) -> Result<CString, ErrorKind> {
+    // Use as_os_str().as_bytes() para Unix, que é geralmente compatível com Vec<u8> para CString
+    CString::new(path.as_os_str().as_bytes()).map_err(|_| ErrorKind::PathContainsNul)
+}
 
-    let fd = check_err(
-        libc::open(path_c.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o666),
+#[cfg(unix)]
+unsafe fn create_pid_file_unix(path: &Path) -> Result<RawFd, ErrorKind> {
+    let path_c = pathbuf_into_cstring_unix(path)?;
+    let fd = error::check_err(
+        libc::open(path_c.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC, 0o666), // Adicionado O_TRUNC
         ErrorKind::OpenPidfile,
     )?;
 
-    check_err(
-        libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB),
-        ErrorKind::LockPidfile,
-    )?;
+    let flock_res = libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB);
+    if flock_res == -1 { // flock retorna 0 em sucesso, -1 em erro.
+        let os_err = error::get_last_os_error();
+        libc::close(fd); // Importante fechar o fd se o lock falhar.
+        return Err(ErrorKind::LockPidfile(os_err));
+    }
     Ok(fd)
 }
 
-unsafe fn chown_pid_file(
-    path: PathBuf,
+#[cfg(unix)]
+unsafe fn chown_pid_file_unix(
+    path: &Path,
     uid: libc::uid_t,
     gid: libc::gid_t,
 ) -> Result<(), ErrorKind> {
-    let path_c = pathbuf_into_cstring(path)?;
-    check_err(
-        libc::chown(path_c.as_ptr(), uid, gid),
-        ErrorKind::ChownPidfile,
-    )?;
+    let path_c = pathbuf_into_cstring_unix(path)?;
+    error::check_err(libc::chown(path_c.as_ptr(), uid, gid), ErrorKind::ChownPidfile)?;
     Ok(())
 }
 
-unsafe fn write_pid_file(fd: libc::c_int) -> Result<(), ErrorKind> {
+#[cfg(unix)]
+unsafe fn write_pid_file_unix(fd: RawFd) -> Result<(), ErrorKind> {
     let pid = libc::getpid();
     let pid_buf = format!("{}\n", pid).into_bytes();
-    let pid_length = pid_buf.len();
-    let pid_c = CString::new(pid_buf).unwrap();
-    check_err(libc::ftruncate(fd, 0), ErrorKind::TruncatePidfile)?;
+    // ftruncate não é necessário se O_TRUNC foi usado em open, mas não faz mal.
+    error::check_err(libc::ftruncate(fd, 0), ErrorKind::TruncatePidfile)?;
+    // Reposicionar o cursor para o início do arquivo antes de escrever
+    error::check_err(libc::lseek(fd, 0, libc::SEEK_SET), ErrorKind::TruncatePidfile)?;
 
-    let written = check_err(
-        libc::write(fd, pid_c.as_ptr() as *const libc::c_void, pid_length),
+
+    let written = error::check_err(
+        libc::write(fd, pid_buf.as_ptr() as *const libc::c_void, pid_buf.len()),
         ErrorKind::WritePid,
     )?;
-
-    if written < pid_length as isize {
-        return Err(ErrorKind::WritePidUnspecifiedError);
+    if written < pid_buf.len() as isize {
+        Err(ErrorKind::WritePidUnspecifiedError)
+    } else {
+        Ok(())
     }
-
-    Ok(())
 }
 
-unsafe fn set_cloexec_pid_file(fd: libc::c_int) -> Result<(), ErrorKind> {
+#[cfg(unix)]
+unsafe fn set_cloexec_pid_file_unix(fd: RawFd) -> Result<(), ErrorKind> {
     if cfg!(not(target_os = "redox")) {
-        let flags = check_err(libc::fcntl(fd, libc::F_GETFD), ErrorKind::GetPidfileFlags)?;
-
-        check_err(
+        let flags = error::check_err(libc::fcntl(fd, libc::F_GETFD), ErrorKind::GetPidfileFlags)?;
+        error::check_err(
             libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC),
             ErrorKind::SetPidfileFlags,
         )?;
     } else {
-        check_err(libc::ioctl(fd, libc::FIOCLEX), ErrorKind::SetPidfileFlags)?;
+        // Para Redox, FIOCLEX pode ser usado, mas precisa da definição correta de FIOCLEX.
+        // Se não estiver disponível ou não implementado, pode ser um no-op com aviso.
+        // Exemplo: error::check_err(libc::ioctl(fd, libc::FIOCLEX as _), ErrorKind::SetPidfileFlags)?;
+        eprintln!("Warning: Redox FIOCLEX for pid_file not fully implemented in this example for set_cloexec_pid_file_unix.");
     }
     Ok(())
 }
 
-unsafe fn change_root(path: PathBuf) -> Result<(), ErrorKind> {
-    let path_c = pathbuf_into_cstring(path)?;
-    check_err(libc::chroot(path_c.as_ptr()), ErrorKind::Chroot)?;
+#[cfg(unix)]
+unsafe fn change_root_unix(path: &Path) -> Result<(), ErrorKind> {
+    let path_c = pathbuf_into_cstring_unix(path)?;
+    error::check_err(libc::chroot(path_c.as_ptr()), ErrorKind::Chroot)?;
     Ok(())
 }
 
-unsafe fn get_gid_by_name(name: &CString) -> Option<libc::gid_t> {
-    let ptr = libc::getgrnam(name.as_ptr() as *const libc::c_char);
-    if ptr.is_null() {
-        None
-    } else {
-        let s = &*ptr;
-        Some(s.gr_gid)
+
+// --- Funções Auxiliares Específicas do Windows ---
+#[cfg(windows)]
+fn to_wstring(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn relaunch_detached_windows() -> Result<u32, ErrorKind> {
+    unsafe {
+        let mut module_path_buf = vec![0u16; 1024];
+        let len = GetModuleFileNameW(0 as _, module_path_buf.as_mut_ptr(), module_path_buf.len() as u32);
+        if len == 0 || len == module_path_buf.len() as u32 {
+            return Err(error::get_last_windows_api_error_kind("GetModuleFileNameW_relaunch"));
+        }
+
+        // Construir a linha de comando completa incluindo o executável e TODOS os argumentos originais
+        let current_args: Vec<String> = std::env::args().collect(); // Captura todos os args do processo atual
+        let mut full_command_line_str = String::new();
+
+        // Iterar sobre os argumentos e construí-los na string de linha de comando.
+        // Cuidar de espaços em argumentos (citar). Esta é uma citação básica.
+        for (i, arg) in current_args.iter().enumerate() {
+            if i > 0 { // Adicionar espaço entre argumentos
+                full_command_line_str.push(' ');
+            }
+            // Citar o argumento se ele contiver espaços ou já tiver aspas
+            if arg.contains(' ') || arg.contains('"') {
+                full_command_line_str.push('"');
+                // Escapar aspas internas se houverem
+                full_command_line_str.push_str(&arg.replace('"', "\\\""));
+                full_command_line_str.push('"');
+            } else {
+                full_command_line_str.push_str(arg);
+            }
+        }
+
+        let mut command_line_w = to_wstring(&full_command_line_str); // Converte par
+            
+        let mut si: STARTUPINFOW = std::mem::zeroed();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        // Para processos desanexados, é bom não herdar handles e não mostrar janela.
+        // si.dwFlags = STARTF_USESTDHANDLES; // Se quiser controlar handles, mas aqui não precisamos.
+        // si.hStdInput, si.hStdOutput, si.hStdError devem ser NULL ou inválidos para não herdar.
+        // O comportamento padrão de CreateProcess sem STARTF_USESTDHANDLES para DETACHED_PROCESS
+        // é não herdar os std handles da consola do pai.
+
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+
+        // module_path_buf já é null-terminated por GetModuleFileNameW se len < buf.len()
+        // Se len == buf.len(), pode não ser. Mas GetModuleFileNameW deve retornar o tamanho sem o null.
+        // Para CreateProcessW, o lpApplicationName pode ser null se lpCommandLine tiver o executável.
+        // lpCommandLine deve ser mutável.
+        let mut command_line = module_path_buf[..(len as usize)].to_vec();
+        command_line.push(0); // Garante terminação nula para CreateProcessW
+
+        if CreateProcessW(
+            ptr::null(), // Pode ser o nome do executável aqui também
+            command_line_w.as_mut_ptr(), // Linha de comando completa (incluindo executável)
+            ptr::null_mut(), // Atributos de segurança do processo (padrão)
+            ptr::null_mut(), // Atributos de segurança do thread (padrão)
+            0,   // bInheritHandles = FALSE (não herda handles)
+            DETACHED_PROCESS | CREATE_NO_WINDOW, // Flags de criação
+            ptr::null_mut(), // Bloco de ambiente (herda do pai)
+            ptr::null(),     // Diretório atual (herda do pai)
+            &mut si,
+            &mut pi,
+        ) == 0 { // FALSE em caso de erro
+            Err(error::get_last_windows_api_error_kind("CreateProcessW_relaunch_detached"))
+        } else {
+            // Fechar os handles do processo e thread filho no pai, pois não precisamos deles.
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            Ok(pi.dwProcessId)
+        }
     }
 }
 
-unsafe fn get_uid_by_name(name: &CString) -> Option<libc::uid_t> {
-    let ptr = libc::getpwnam(name.as_ptr() as *const libc::c_char);
-    if ptr.is_null() {
-        None
-    } else {
-        let s = &*ptr;
-        Some(s.pw_uid)
+#[cfg(windows)]
+fn create_pid_file_windows(path: &Path, acquire_lock_now: bool, mutex_handle_out: &mut Option<HANDLE>) -> Result<(), ErrorKind> {
+    // Cria um nome de mutex único baseado no caminho do ficheiro.
+    // Substitui caracteres inválidos para nomes de objetos do kernel.
+    let mutex_name_str = path.to_string_lossy().replace(['\\', ':', '/'], "_");
+    // Adiciona prefixo "Global\\" para mutexes nomeados no escopo global.
+    let mutex_name_w = to_wstring(&format!("Global\\DaemonizePlus_{}", mutex_name_str));
+
+    unsafe {
+        let mutex = CreateMutexW(ptr::null_mut(), 0, mutex_name_w.as_ptr()); // Tenta criar ou abrir o mutex
+        if mutex.is_null() || mutex == INVALID_HANDLE_VALUE { // Corrected check for null pointer
+            return Err(error::get_last_windows_api_error_kind("CreateMutexW_pid_creation"));
+        }
+
+        if acquire_lock_now {
+            let wait_result = WaitForSingleObject(mutex, 0); // Tenta adquirir o lock (timeout 0)
+            if wait_result == WAIT_TIMEOUT {
+                // Outro processo já tem o lock.
+                CloseHandle(mutex); // Libera o handle do mutex que acabamos de criar/abrir.
+                return Err(ErrorKind::LockPidfile(WAIT_TIMEOUT as i32));
+            } else if !(wait_result == WAIT_OBJECT_0 || wait_result == WAIT_ABANDONED) {
+                // Erro inesperado ao esperar pelo mutex.
+                let err_kind = error::get_last_windows_api_error_kind("WaitForSingleObject_pid_lock");
+                CloseHandle(mutex);
+                return Err(err_kind);
+            }
+            // Se WAIT_ABANDONED, o mutex foi adquirido, mas o processo anterior terminou sem liberá-lo.
+            // Para um lock de PID, isto é geralmente tratado como aquisição bem-sucedida.
+        }
+        *mutex_handle_out = Some(mutex);
+        Ok(())
     }
 }
 
-fn pathbuf_into_cstring(path: PathBuf) -> Result<CString, ErrorKind> {
-    CString::new(path.into_os_string().into_vec()).map_err(|_| ErrorKind::PathContainsNul)
+
+#[cfg(windows)]
+fn write_pid_file_windows(path: &Path) -> Result<(), ErrorKind> {
+    let pid = unsafe { GetCurrentProcessId() };
+    let content = format!("{}\n", pid);
+    let path_w = to_wstring(&path.to_string_lossy());
+
+    unsafe {
+        // Tenta criar um novo ficheiro. Se já existir, falha (CREATE_NEW).
+        // Isso é para garantir que não sobrescrevemos um PID file de outro processo sem querer
+        // se o lock (mutex) falhou ou não foi usado corretamente.
+        // A lógica de lock com mutex é a principal para "single instance".
+        // O ficheiro PID é mais para informação.
+        let file_handle = CreateFileW(
+            path_w.as_ptr(),
+            FILE_GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, // Permite que outros leiam o PID file
+            ptr::null_mut(),
+            CREATE_ALWAYS, // Cria se não existir, falha se existir
+            FILE_ATTRIBUTE_NORMAL,
+            0 as _,
+        );
+
+        if file_handle == INVALID_HANDLE_VALUE {
+            let err_code = error::get_last_windows_api_error_kind("CreateFileW_pid_write_CREATE_ALWAYS_failed").get_os_error_code().unwrap_or(0);
+            eprintln!("[DEBUG - PID FILE] CreateFileW (CREATE_ALWAYS) failed with code: {}", err_code);
+            return Err(error::get_last_windows_api_error_kind("CreateFileW_pid_write"));
+        }
+        let final_handle = file_handle;
+
+        /* let final_handle = if file_handle == INVALID_HANDLE_VALUE {
+            // Se CREATE_NEW falhou (provavelmente porque o ficheiro já existe),
+            // tenta abri-lo para sobrescrever (TRUNCATE_EXISTING).
+            let existing_handle = CreateFileW(
+                path_w.as_ptr(),
+                FILE_GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                ptr::null_mut(),
+                TRUNCATE_EXISTING, // Abre e trunca se existir
+                FILE_ATTRIBUTE_NORMAL,
+                0 as _,
+            );
+            if existing_handle == INVALID_HANDLE_VALUE {
+                let truncate_existing_err_code = error::get_last_windows_api_error_kind("CreateFileW_pid_write_TRUNCATE_EXISTING").get_os_error_code().unwrap_or(0);
+                eprintln!("[DEBUG - PID FILE] CreateFileW (TRUNCATE_EXISTING) failed with code: {}", truncate_existing_err_code);
+                return Err(error::get_last_windows_api_error_kind("CreateFileW_pid_write_open_existing"));
+            }
+            existing_handle
+        } else {
+            file_handle
+        }; */
+
+        let mut bytes_written = 0;
+        if WriteFile(
+            final_handle,
+            content.as_ptr() as _, // Conteúdo a escrever
+            content.len() as u32,  // Número de bytes a escrever
+            &mut bytes_written,    // Número de bytes escritos
+            ptr::null_mut(),       // Para operações síncronas
+        ) == 0 || bytes_written != content.len() as u32 { // FALSE em erro ou se nem todos os bytes foram escritos
+            let err = error::get_last_windows_api_error_kind("WriteFile_pid_content");
+            CloseHandle(final_handle);
+            return Err(err);
+        }
+
+        let _ = FlushFileBuffers(final_handle); // Garante que os dados são escritos no disco. Ignora resultado.
+        CloseHandle(final_handle); // Fecha o handle do ficheiro.
+    }
+    Ok(())
+}
+
+
+#[cfg(windows)]
+fn redirect_standard_streams_windows(
+    stdin_cfg: Stdio,
+    stdout_cfg: Stdio,
+    stderr_cfg: Stdio,
+) -> Result<(), ErrorKind> {
+    unsafe {
+        let process_stdio = |std_handle_type: u32, cfg: Stdio| -> Result<(), ErrorKind> {
+            // Determina o handle de destino e se era para DevNull ANTES de consumir cfg.inner.
+            let (target_handle, was_devnull): (HANDLE, bool) = match cfg.inner {
+                StdioImpl::Devnull => {
+                    let h = CreateFileW(
+                        to_wstring("NUL").as_ptr(),
+                        FILE_GENERIC_READ | FILE_GENERIC_WRITE, // NUL precisa de R/W
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, // Compartilhamento para NUL
+                        ptr::null_mut(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        0 as _,
+                    );
+                    if h == INVALID_HANDLE_VALUE {
+                        return Err(error::get_last_windows_api_error_kind("CreateFileW_NUL_redirect"));
+                    }
+                    (h, true)
+                }
+                StdioImpl::RedirectToFile(file) => { // `file` (tipo File) é movido aqui
+                    // into_raw_handle() consome `file` e transfere posse do handle.
+                    (file.into_raw_handle() as HANDLE, false)
+                }
+                StdioImpl::Keep => return Ok(()), // Nada a fazer, retorna cedo.
+            };
+
+            if SetStdHandle(std_handle_type, target_handle) == 0 { // FALSE em erro
+                if target_handle != INVALID_HANDLE_VALUE {
+                    // Se SetStdHandle falhou, o target_handle (seja de NUL ou de File)
+                    // não foi assumido pelo sistema, então precisamos fechá-lo.
+                    CloseHandle(target_handle);
+                }
+                return Err(error::get_last_windows_api_error_kind("SetStdHandle_redirect"));
+            }
+
+            // Se SetStdHandle foi bem-sucedido:
+            if was_devnull {
+                // O handle para NUL foi criado por nós e SetStdHandle (espera-se) o duplicou.
+                // Podemos fechar o nosso handle original.
+                // Não precisamos de `std::mem::forget` aqui, pois SetStdHandle duplica o handle,
+                // e nós queremos fechar o nosso handle original para o NUL.
+                if target_handle != INVALID_HANDLE_VALUE { CloseHandle(target_handle); }
+            }
+            // Se era RedirectToFile, o handle foi transferido de `File` via `into_raw_handle`
+            // e agora é propriedade do sistema como o std handle. Não o fechamos aqui,
+            // e `std::mem::forget` não é necessário porque `into_raw_handle` já transferiu a posse.
+            Ok(())
+        };
+
+        process_stdio(STD_INPUT_HANDLE, stdin_cfg)?;
+        process_stdio(STD_OUTPUT_HANDLE, stdout_cfg)?;
+        process_stdio(STD_ERROR_HANDLE, stderr_cfg)?;
+    }
+    Ok(())
 }

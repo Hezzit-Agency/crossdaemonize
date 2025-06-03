@@ -1,40 +1,58 @@
-extern crate arraystring;
-extern crate daemonize;
+// crossdaemonize-tests/src/lib.rs
+
+extern crate crossdaemonize;
+extern crate tempfile;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::str::FromStr;
+use serde::{Serialize, Deserialize};
+use bincode;
+use crossdaemonize::{Daemonize, Outcome};
 
-use daemonize::{Daemonize, Error, Outcome};
+use std::fs::OpenOptions;
 
-const ARG_PID_FILE: &str = "--pid-file";
-const ARG_CHOWN_PID_FILE: &str = "--chown-pid-file";
-const ARG_WORKING_DIRECTORY: &str = "--working-directory";
-const ARG_USER_STRING: &str = "--user-string";
-const ARG_USER_NUM: &str = "--user-num";
-const ARG_GROUP_STRING: &str = "--group-string";
-const ARG_GROUP_NUM: &str = "--group-num";
-const ARG_UMASK: &str = "--umask";
-const ARG_CHROOT: &str = "--chroot";
-const ARG_STDOUT: &str = "--stdout";
-const ARG_STDERR: &str = "--stderr";
-const ARG_ADDITIONAL_FILE: &str = "--additional-file";
-const ARG_SLEEP_MS: &str = "--sleep-ms";
-const ARG_HUMAN_READABLE: &str = "--human-readable";
+#[cfg(unix)]
+use libc;
 
+// Constantes públicas para serem acessíveis de examples/tester.rs
+pub const ARG_PID_FILE: &str = "--pid-file";
+pub const ARG_CHOWN_PID_FILE: &str = "--chown-pid-file";
+pub const ARG_WORKING_DIRECTORY: &str = "--working-directory"; // Caminho absoluto para o WD
+pub const ARG_USER_STRING: &str = "--user-string";
+#[cfg(unix)]
+pub const ARG_USER_NUM: &str = "--user-num";
+pub const ARG_GROUP_STRING: &str = "--group-string";
+#[cfg(unix)]
+pub const ARG_GROUP_NUM: &str = "--group-num";
+pub const ARG_UMASK: &str = "--umask";
+pub const ARG_CHROOT: &str = "--chroot";
+pub const ARG_STDOUT: &str = "--stdout";
+pub const ARG_STDERR: &str = "--stderr";
+pub const ARG_ADDITIONAL_FILE: &str = "--additional-file"; // Caminho absoluto para o arquivo adicional
+pub const ARG_SLEEP_MS: &str = "--sleep-ms";
+pub const ARG_HUMAN_READABLE: &str = "--human-readable";
+pub const ARG_OUTPUT_FILE: &str = "--output-file";
+
+// Constantes de dados públicas
 pub const STDOUT_DATA: &str = "stdout data";
 pub const STDERR_DATA: &str = "stderr data";
 pub const ADDITIONAL_FILE_DATA: &str = "additional file data";
 
-const TESTER_PATH: &str = "../target/debug/examples/tester";
+// Caminho para o executável tester.exe (localizado em examples/ dentro do seu próprio projeto)
+const TESTER_PATH: &str = if cfg!(windows) {
+    "./target/debug/examples/tester.exe"
+} else {
+    "./target/debug/examples/tester"
+};
 
 const MAX_WAIT_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 
-const DATA_LEN: usize = std::mem::size_of::<Result<EnvData, Error>>();
-
+// Struct Tester (inalterada na sua lógica principal)
 pub struct Tester {
     command: Command,
+    _output_file_path: Option<PathBuf>,
 }
 
 impl Default for Tester {
@@ -46,7 +64,10 @@ impl Default for Tester {
 impl Tester {
     pub fn new() -> Self {
         let command = Command::new(TESTER_PATH);
-        Self { command }
+        Self {
+            command,
+            _output_file_path: None,
+        }
     }
 
     pub fn pid_file<F: AsRef<Path>>(&mut self, pid_file: F) -> &mut Self {
@@ -54,8 +75,8 @@ impl Tester {
         self
     }
 
-    pub fn chown_pid_file(&mut self) -> &mut Self {
-        self.command.arg(ARG_CHOWN_PID_FILE);
+    pub fn chown_pid_file(&mut self, chown: bool) -> &mut Self {
+        self.command.arg(ARG_CHOWN_PID_FILE).arg(chown.to_string());
         self
     }
 
@@ -69,8 +90,9 @@ impl Tester {
         self
     }
 
+    #[cfg(unix)]
     pub fn user_num(&mut self, user: u32) -> &mut Self {
-        self.command.arg(ARG_USER_STRING).arg(user.to_string());
+        self.command.arg(ARG_USER_NUM).arg(user.to_string());
         self
     }
 
@@ -79,8 +101,9 @@ impl Tester {
         self
     }
 
+    #[cfg(unix)]
     pub fn group_num(&mut self, group: u32) -> &mut Self {
-        self.command.arg(ARG_GROUP_STRING).arg(group.to_string());
+        self.command.arg(ARG_GROUP_NUM).arg(group.to_string());
         self
     }
 
@@ -116,7 +139,15 @@ impl Tester {
         self
     }
 
-    pub fn run(&mut self) -> Result<EnvData, Error> {
+    // --- FUNÇÃO run() MODIFICADA ---
+    pub fn run(&mut self) -> Result<EnvData, Box<dyn std::error::Error>> {
+        let temp_file = tempfile::NamedTempFile::new()
+            .map_err(|e| format!("Failed to create temporary file for output: {}", e))?;
+        let output_file_path = temp_file.path().to_path_buf();
+        self._output_file_path = Some(output_file_path.clone());
+
+        self.command.arg(ARG_OUTPUT_FILE).arg(&output_file_path);
+
         let mut child = self
             .command
             .stdout(Stdio::piped())
@@ -129,7 +160,12 @@ impl Tester {
         let exit_status = loop {
             let now = std::time::Instant::now();
             if now - st > MAX_WAIT_DURATION {
-                panic!("wait for result timeout")
+                child.kill().ok();
+                let mut stderr_output = String::new();
+                if let Some(mut stderr_handle) = child.stderr.take() {
+                    stderr_handle.read_to_string(&mut stderr_output).ok();
+                }
+                return Err(format!("timeout waiting for tester result. Stderr: {}", stderr_output).into());
             }
             match child.try_wait().expect("unable to wait for result") {
                 Some(result) => break result,
@@ -137,58 +173,83 @@ impl Tester {
             }
         };
 
-        if !exit_status.success() {
-            let mut stderr = String::new();
-            child
-                .stderr
-                .expect("unable to get stderr")
-                .read_to_string(&mut stderr)
-                .expect("unable to read tester stderr");
-            panic!(
-                "invalid tester exit status ({}), stderr: {}",
-                exit_status.code().expect("unable to get status code"),
-                stderr
-            );
+        let mut stderr_output = String::new();
+        if let Some(mut stderr_handle) = child.stderr.take() {
+            stderr_handle
+                .read_to_string(&mut stderr_output)
+                .expect("unable to read tester stderr after child exit");
         }
 
-        let mut stdout = [0; DATA_LEN];
-        child
-            .stdout
-            .expect("unable to get stdout")
-            .read_exact(&mut stdout)
-            .expect("unable to read tester stdout");
+        if !exit_status.success() {
+            return Err(format!(
+                "tester exited with status code {:?}, stderr: {}",
+                exit_status.code(),
+                stderr_output
+            ).into());
+        }
 
-        unsafe { std::mem::transmute(stdout) }
+        let mut data = Vec::new();
+        std::fs::File::open(&output_file_path)
+            .map_err(|e| format!("Failed to open output file {:?}: {}", output_file_path, e))?
+            .read_to_end(&mut data)
+            .map_err(|e| format!("Failed to read data from output file {:?}: {}", output_file_path, e))?;
+
+        bincode::deserialize(&data)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
     }
 }
 
-#[derive(Debug)]
+// EnvData (pública, inalterada)
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EnvData {
-    pub cwd: arraystring::ArrayString<arraystring::typenum::U255>,
+    pub cwd: String,
     pub pid: u32,
     pub euid: u32,
     pub egid: u32,
 }
 
 impl EnvData {
-    fn new() -> EnvData {
+    pub fn new() -> EnvData {
+        let cwd = std::env::current_dir()
+            .expect("unable to get current dir")
+            .to_str()
+            .expect("invalid path")
+            .to_string();
+
+        #[cfg(unix)]
+        let (euid, egid) = unsafe { (libc::geteuid() as u32, libc::getegid() as u32) };
+
+        #[cfg(windows)]
+        let (euid, egid) = (0, 0);
+
         Self {
-            cwd: arraystring::ArrayString::from_str(
-                std::env::current_dir()
-                    .expect("unable to get current dir")
-                    .to_str()
-                    .expect("invalid path"),
-            )
-            .expect("too long path"),
+            cwd,
             pid: std::process::id(),
-            euid: unsafe { libc::geteuid() as u32 },
-            egid: unsafe { libc::getegid() as u32 },
+            euid,
+            egid,
         }
     }
 }
 
-pub fn execute_tester() {
-    let mut daemonize = Daemonize::new();
+// --- execute_tester_inner() MODIFICADA ---
+pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
+    let log_file_path = "tester_debug.log";
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open(log_file_path)
+        .map_err(|e| format!("Failed to open log file {}: {}", log_file_path, e))?;
+
+    writeln!(log_file, "[DEBUG - START] Tester started at {:?}", std::time::Instant::now()).ok();
+
+    let mut daemonize_builder = Daemonize::new(); // Este builder será configurado com os argumentos
+
+    #[cfg(windows)]
+    {
+        daemonize_builder = daemonize_builder.suppress_unsupported_warnings(true);
+    }
+
     let mut args = std::env::args().skip(1);
 
     fn read_value<T: FromStr>(args: &mut dyn Iterator<Item = String>, key: &str) -> T
@@ -203,95 +264,197 @@ pub fn execute_tester() {
             .unwrap_or_else(|_| panic!("invalid value for key {}", key))
     }
 
-    let mut additional_files = Vec::new();
-    let mut sleep_duration = None;
-    let mut human_readable = false;
+    // Variáveis para armazenar os argumentos parseados
+    let mut pid_file_passed: Option<PathBuf> = None;
+    let mut chown_pid_file_passed: Option<bool> = None;
+    let mut working_directory_passed: Option<PathBuf> = None;
+    let mut user_string_passed: Option<String> = None;
+    #[cfg(unix)]
+    let mut user_num_passed: Option<u32> = None;
+    let mut group_string_passed: Option<String> = None;
+    #[cfg(unix)]
+    let mut group_num_passed: Option<u32> = None;
+    let mut umask_passed: Option<u32> = None;
+    let mut chroot_passed: Option<PathBuf> = None;
+    let mut stdout_passed: Option<PathBuf> = None;
+    let mut stderr_passed: Option<PathBuf> = None;
+    let mut additional_file_passed: Option<PathBuf> = None;
+    let mut sleep_ms_passed: Option<u64> = None;
+    let mut human_readable_passed: bool = false;
+    let mut output_file_path_parsed: Option<PathBuf> = None;
 
+
+    writeln!(log_file, "[DEBUG - ARGS] Raw arguments received: {:?}", std::env::args().collect::<Vec<_>>()).ok();
+
+    // Loop para PARSEAR TODOS os argumentos
     while let Some(key) = args.next() {
-        daemonize = match key.as_str() {
-            ARG_PID_FILE => daemonize.pid_file(read_value::<PathBuf>(&mut args, &key)),
-            ARG_CHOWN_PID_FILE => daemonize.chown_pid_file(true),
-            ARG_WORKING_DIRECTORY => {
-                daemonize.working_directory(read_value::<PathBuf>(&mut args, &key))
-            }
-            ARG_USER_STRING => daemonize.user(read_value::<String>(&mut args, &key).as_str()),
-            ARG_USER_NUM => daemonize.user(read_value::<u32>(&mut args, &key)),
-            ARG_GROUP_STRING => daemonize.group(read_value::<String>(&mut args, &key).as_str()),
-            ARG_GROUP_NUM => daemonize.group(read_value::<u32>(&mut args, &key)),
-            ARG_UMASK => daemonize.umask(read_value::<u32>(&mut args, &key)),
-            ARG_CHROOT => daemonize.chroot(read_value::<PathBuf>(&mut args, &key)),
+        writeln!(log_file, "[DEBUG] Processing arg: {}", key).ok();
+        daemonize_builder = match key.as_str() {
+            ARG_PID_FILE => { pid_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder }, // Passa o caminho, configurado depois
+            ARG_CHOWN_PID_FILE => { chown_pid_file_passed = Some(read_value::<bool>(&mut args, &key)); daemonize_builder },
+            ARG_WORKING_DIRECTORY => { working_directory_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
+            ARG_USER_STRING => { user_string_passed = Some(read_value::<String>(&mut args, &key)); daemonize_builder },
+            #[cfg(unix)]
+            ARG_USER_NUM => { user_num_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
+            ARG_GROUP_STRING => { group_string_passed = Some(read_value::<String>(&mut args, &key)); daemonize_builder },
+            #[cfg(unix)]
+            ARG_GROUP_NUM => { group_num_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
+            ARG_UMASK => { umask_passed = Some(read_value::<u32>(&mut args, &key)); daemonize_builder },
+            ARG_CHROOT => { chroot_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
             ARG_STDOUT => {
-                let file = std::fs::File::create(read_value::<PathBuf>(&mut args, &key))
-                    .expect("unable to open stdout file");
-                daemonize.stdout(file)
+                let file_path = read_value::<PathBuf>(&mut args, &key);
+                writeln!(log_file, "[DEBUG] Redirecting stdout to: {:?}", file_path).ok();
+                let file = std::fs::File::create(&file_path)
+                    .map_err(|e| format!("unable to open stdout file {:?}: {}", file_path, e))?;
+                daemonize_builder.stdout(file)
             }
             ARG_STDERR => {
-                let file = std::fs::File::create(read_value::<PathBuf>(&mut args, &key))
-                    .expect("unable to open stder file");
-                daemonize.stderr(file)
+                let file_path = read_value::<PathBuf>(&mut args, &key);
+                writeln!(log_file, "[DEBUG] Redirecting stderr to: {:?}", file_path).ok();
+                let file = std::fs::File::create(&file_path)
+                    .map_err(|e| format!("unable to open stderr file {:?}: {}", file_path, e))?;
+                daemonize_builder.stderr(file)
             }
-            ARG_ADDITIONAL_FILE => {
-                additional_files.push(read_value::<PathBuf>(&mut args, &key));
-                daemonize
-            }
-            ARG_SLEEP_MS => {
-                let ms = read_value::<u64>(&mut args, &key);
-                sleep_duration = Some(std::time::Duration::from_millis(ms));
-                daemonize
-            }
-            ARG_HUMAN_READABLE => {
-                human_readable = true;
-                daemonize
-            }
-            key => {
-                panic!("unknown key: {}", key)
-            }
+            ARG_ADDITIONAL_FILE => { additional_file_passed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
+            ARG_SLEEP_MS => { sleep_ms_passed = Some(read_value::<u64>(&mut args, &key)); daemonize_builder },
+            ARG_HUMAN_READABLE => { human_readable_passed = true; daemonize_builder },
+            ARG_OUTPUT_FILE => { output_file_path_parsed = Some(read_value::<PathBuf>(&mut args, &key)); daemonize_builder },
+            key => return Err(format!("unknown key: {}", key).into()),
         }
     }
 
-    let (mut read_pipe, mut write_pipe) = os_pipe::pipe().expect("unable to open pipe");
+    writeln!(log_file, "[DEBUG] output_file_path_parsed after arg parsing: {:?}", output_file_path_parsed).ok();
+    writeln!(log_file, "[DEBUG] working_directory_passed after arg parsing: {:?}", working_directory_passed).ok();
+    writeln!(log_file, "[DEBUG] additional_file_passed after arg parsing: {:?}", additional_file_passed).ok();
+    writeln!(log_file, "[DEBUG] pid_file_passed after arg parsing: {:?}", pid_file_passed).ok();
 
-    match daemonize.execute() {
+
+    // AGORA, CONFIGURE O DAEMONIZE_BUILDER COM BASE NOS ARGUMENTOS PARSEADOS
+    // A maioria das configurações pode ser feita diretamente aqui.
+
+    if let Some(path) = pid_file_passed {
+        daemonize_builder = daemonize_builder.pid_file(&path);
+    }
+    if let Some(b) = chown_pid_file_passed {
+        daemonize_builder = daemonize_builder.chown_pid_file(b);
+    }
+    // working_directory será configurado no builder, o diretório precisa existir e ser acessível.
+    if let Some(path) = working_directory_passed {
+        // Garantir que o diretório exista antes de pedir ao daemon para mudar para ele
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("Failed to create working directory {:?} before daemonizing: {}", path, e))?;
+        daemonize_builder = daemonize_builder.working_directory(&path);
+    }
+    if let Some(user) = user_string_passed {
+        daemonize_builder = daemonize_builder.user(user.as_str());
+    }
+    #[cfg(unix)]
+    if let Some(user_id) = user_num_passed {
+        daemonize_builder = daemonize_builder.user(user_id);
+    }
+    if let Some(group) = group_string_passed {
+        daemonize_builder = daemonize_builder.group(group.as_str());
+    }
+    #[cfg(unix)]
+    if let Some(group_id) = group_num_passed {
+        daemonize_builder = daemonize_builder.group(group_id);
+    }
+    if let Some(umask) = umask_passed {
+        daemonize_builder = daemonize_builder.umask(umask);
+    }
+    if let Some(path) = chroot_passed {
+        daemonize_builder = daemonize_builder.chroot(&path);
+    }
+    // stdout e stderr já foram configurados no loop, se presentes.
+    // additional_file será tratado *depois* da daemonização (no child)
+    // sleep_ms e human_readable também serão usados *depois* da daemonização.
+
+
+    let mut dummy_handle = None;
+    let (mut read_pipe, mut write_pipe) = os_pipe::pipe()
+        .map_err(|e| format!("unable to open pipe: {}", e))?;
+
+
+    writeln!(log_file, "[DEBUG] Calling daemonize.execute()").ok();
+    match daemonize_builder.execute(&mut dummy_handle) { // Usa o builder configurado
         Outcome::Parent(_) => {
+            writeln!(log_file, "[DEBUG - PARENT] Daemonized process spawned. Exiting parent path.").ok();
             drop(write_pipe);
-            let mut data = Vec::new();
-            read_pipe
-                .read_to_end(&mut data)
-                .expect("unable to read pipe");
-            if !human_readable && data.len() != DATA_LEN {
-                panic!("invalid data len");
-            }
-            std::io::stdout()
-                .write_all(&data)
-                .expect("unable to write data")
+            read_pipe.read_to_end(&mut Vec::new()).map_err(|e| format!("Parent: unable to read pipe: {}", e))?;
+            std::io::stdout().write_all(&[]).map_err(|e| format!("Parent: unable to write data: {}", e))?;
+            Ok(())
         }
         Outcome::Child(result) => {
-            drop(read_pipe);
-            let result = result.map(|_| EnvData::new());
+            drop(read_pipe); // Fecha a ponta de leitura no filho
 
-            print!("{}", STDOUT_DATA);
-            eprint!("{}", STDERR_DATA);
+            writeln!(log_file, "[DEBUG - CHILD] Inside child process. Daemonize result: {:?}", result).ok();
 
-            for file_path in additional_files {
-                if let Ok(mut file) = std::fs::File::create(&file_path) {
+            if let Err(err) = result {
+                writeln!(log_file, "[DEBUG - CHILD - ERROR] Daemonize failed: {:?}", err).ok();
+                return Err(Box::new(err));
+            }
+
+            // TRATAMENTO DE additional_file AQUI NO CHILD
+            // A pasta já deve existir e ser acessível, pois o pai a criou e a passou.
+            if let Some(path) = additional_file_passed {
+                writeln!(log_file, "[DEBUG - CHILD] Creating additional file: {:?}", path).ok();
+                if let Ok(mut file) = std::fs::File::create(&path) {
                     file.write_all(ADDITIONAL_FILE_DATA.as_bytes()).ok();
+                } else {
+                    let create_err = std::io::Error::last_os_error();
+                    writeln!(log_file, "[DEBUG - CHILD - ERROR] Failed to create additional file {:?}: {}. OS Error: {}", path, create_err, create_err.raw_os_error().unwrap_or(0)).ok();
                 }
             }
 
-            if human_readable {
-                write_pipe
-                    .write_all(format!("{:?}\n", result).as_bytes())
-                    .ok();
+
+            writeln!(log_file, "[DEBUG - CHILD] Daemonize successful. Creating EnvData.").ok();
+            let env = EnvData::new();
+            writeln!(log_file, "[DEBUG - CHILD] EnvData created: {:?}", env).ok();
+            print!("{}", STDOUT_DATA);
+            eprint!("{}", STDERR_DATA);
+
+            if let Some(path) = output_file_path_parsed {
+                writeln!(log_file, "[DEBUG - CHILD] Writing EnvData to temporary file: {:?}", path).ok();
+                let mut output_file = std::fs::File::create(&path)
+                    .map_err(|e| format!("Child: Failed to create output file {:?}: {}", path, e))?;
+
+                if human_readable_passed { // <-- AGORA USAMOS A VARIÁVEL BOOLEANA AQUI
+                    writeln!(log_file, "[DEBUG - CHILD] Serializing human readable EnvData to file.").ok();
+                    output_file.write_all(format!("{:?}\n", env).as_bytes())
+                        .map_err(|e| format!("Child: failed to write human readable data to file: {}", e))?;
+                } else {
+                    writeln!(log_file, "[DEBUG - CHILD] Serializing bincode EnvData to file.").ok();
+                    let data = bincode::serialize(&env)
+                        .map_err(|e| format!("Child: bincode serialization failed to file: {}", e))?;
+                    output_file.write_all(&data)
+                        .map_err(|e| format!("Child: failed to write bincode data to file: {}", e))?;
+                }
+                output_file.flush()
+                    .map_err(|e| format!("Child: failed to flush output file: {}", e))?;
+                writeln!(log_file, "[DEBUG - CHILD] Data written to temporary file. Closing file.").ok();
+
             } else {
-                let data: [u8; DATA_LEN] = unsafe { std::mem::transmute(result) };
-                write_pipe.write_all(&data).ok();
+                writeln!(log_file, "[DEBUG - CHILD - ERROR] Output file path not provided! This is an error in test setup.").ok();
+                return Err("Output file path not provided to tester.".into());
             }
 
+            writeln!(log_file, "[DEBUG - CHILD] Dropping main write_pipe (not used for EnvData).").ok();
             drop(write_pipe);
 
-            if let Some(duration) = sleep_duration {
-                std::thread::sleep(duration)
+            if let Some(duration_ms) = sleep_ms_passed { // <-- AGORA USAMOS A VARIÁVEL AQUI
+                writeln!(log_file, "[DEBUG - CHILD] Sleeping for {}ms.", duration_ms).ok();
+                std::thread::sleep(std::time::Duration::from_millis(duration_ms)); // <-- CONVERTE PARA DURACION AQUI
             }
+            writeln!(log_file, "[DEBUG - CHILD] Child process finished successfully.").ok();
+            Ok(())
         }
+    }
+}
+
+// Função de fachada para compatibilidade, chamando execute_tester_inner
+pub fn execute_tester() {
+    if let Err(e) = execute_tester_inner() {
+        eprintln!("[FACADE] Error in execute_tester: {:?}", e);
+        std::process::exit(1);
     }
 }

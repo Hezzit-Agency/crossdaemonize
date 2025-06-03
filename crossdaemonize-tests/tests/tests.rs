@@ -25,7 +25,14 @@ fn chdir() {
     assert!(_result_chdir.is_ok(), "chdir test failed: {:?}", _result_chdir.unwrap_err());
 
     #[cfg(unix)]
-    assert_eq!(_result_chdir.unwrap().cwd.as_str(), "/usr"); // Unix geralmente espera /usr ou /, não "test_chdir_target"
+    {
+        let expected_cwd = temp_dir_for_chdir.path().canonicalize()
+            .expect("Failed to canonicalize path for chdir test")
+            .to_string_lossy()
+            .to_string();
+        let actual_cwd = _result_chdir.unwrap().cwd;
+        assert_eq!(actual_cwd, expected_cwd, "CWD should match the temporary directory on Unix");
+    }
     #[cfg(windows)]
     {
         // Canonicalize para resolver ., .. e garantir o formato completo.

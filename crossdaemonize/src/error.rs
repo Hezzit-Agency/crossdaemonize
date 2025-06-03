@@ -1,6 +1,7 @@
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use cfg_if::cfg_if;
 
 pub type OsError = i32;
 
@@ -163,8 +164,16 @@ impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.description())?;
         if let Some(code) = self.get_os_error_code() {
-            if !matches!(self, ErrorKind::WindowsApiError { .. } | ErrorKind::Io(_)) {
-                write!(f, " (OS Error Code: {})", code)?;
+            cfg_if! {
+                if #[cfg(windows)] {
+                    if !matches!(self, ErrorKind::WindowsApiError { .. } | ErrorKind::Io(_)) {
+                        write!(f, " (OS Error Code: {})", code)?;
+                    }
+                } else {
+                    if !matches!(self, ErrorKind::Io(_)) {
+                        write!(f, " (OS Error Code: {})", code)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -247,12 +256,6 @@ macro_rules! impl_num_for_signed_integer {
 #[cfg(unix)]
 impl_num_for_signed_integer!(i8 i16 i32 i64 isize);
 
-#[cfg(unix)]
-impl Num for libc::c_int {
-    fn is_err(&self) -> bool {
-        *self == -1
-    }
-}
 
 #[cfg(unix)]
 pub fn get_last_os_error() -> OsError {

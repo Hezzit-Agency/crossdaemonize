@@ -20,7 +20,7 @@ fn simple() {
 fn chdir() {
     let _result_init = Tester::new().run().unwrap();
 
-    // --- create temporary directory and pass full path ---
+    // create a temporary directory and pass its full path
     let temp_dir_for_chdir = TempDir::new().expect("Failed to create temp dir for chdir test");
     let target_dir_path = temp_dir_for_chdir.path().to_path_buf(); // full path of the temporary directory
 
@@ -38,8 +38,10 @@ fn chdir() {
     }
     #[cfg(windows)]
     {
-        // Canonicalize para resolver ., .. e garantir o formato completo.
-        let expected_cwd = temp_dir_for_chdir.path().canonicalize() // O processo filho deve ter mudado para este dir
+        // Canonicalize to resolve ., .. and ensure a full path.
+        let expected_cwd = temp_dir_for_chdir
+                                .path()
+                                .canonicalize()
                                 .expect("Failed to canonicalize path for chdir test")
                                 .to_string_lossy()
                                 .to_string();
@@ -52,14 +54,14 @@ fn chdir() {
 
 #[test]
 fn umask() {
-    // --- CRIAÇÃO DO DIRETÓRIO TEMPORÁRIO PELO PAI PARA O ARQUIVO ADICIONAL ---
+    // create a temporary directory for the additional file
     let tmpdir_for_additional_file = TempDir::new().expect("Failed to create tmpdir for additional file");
-    let path = tmpdir_for_additional_file.path().join("umask-test-file"); // Caminho completo para o arquivo
+    let path = tmpdir_for_additional_file.path().join("umask-test-file");
 
     let _result_umask = Tester::new().umask(0o222).additional_file(&path).run();
     assert!(_result_umask.is_ok(), "Umask test failed: {:?}", _result_umask.unwrap_err());
 
-    // Se o teste passou, o arquivo adicional deveria ter sido criado neste caminho.
+    // If the test passed the additional file should exist at this path.
     #[cfg(unix)]
     {
         assert!(path.metadata().unwrap().permissions().readonly());
@@ -73,13 +75,13 @@ fn umask() {
 
 #[test]
 fn pid() {
-    // --- CRIAÇÃO DO DIRETÓRIO TEMPORÁRIO PELO PAI PARA O PID FILE ---
+    // create a temporary directory for the pid file
     let tmpdir_for_pid = TempDir::new().expect("Failed to create tmpdir for pid file");
-    let path = tmpdir_for_pid.path().join("pid"); // Caminho completo para o PID file
+    let path = tmpdir_for_pid.path().join("pid");
 
-    // Primeira execução: deve criar o pidfile
+    // first run should create the pid file
     let _result_first_run = Tester::new()
-        .pid_file(&path) // Passa o caminho completo
+        .pid_file(&path)
         .sleep(std::time::Duration::from_secs(1))
         .run();
     assert!(_result_first_run.is_ok(), "First PID run should succeed: {:?}", _result_first_run.unwrap_err());
@@ -88,8 +90,8 @@ fn pid() {
     let pid = pid_content[..pid_content.len() - 1].parse().expect("PID should be parsable");
     assert_eq!(_result_first_run.unwrap().pid, pid, "PID from EnvData should match PID in file");
 
-    // Segunda execução: deve falhar ao criar o pidfile existente (se o lock funcionar)
-    let _result_second_run = Tester::new().pid_file(&path).run(); // Passa o caminho completo
+    // second run should fail because the pid file already exists (lock active)
+    let _result_second_run = Tester::new().pid_file(&path).run();
     assert!(_result_second_run.is_err(), "Second PID run should fail because pidfile exists/is locked");
 }
 
@@ -99,7 +101,7 @@ fn redirect_stream() {
     let stdout = tmpdir.path().join("stdout");
     let stderr = tmpdir.path().join("stderr");
 
-    // Teste 1: stdout e stderr redirecionados
+    // Case 1: redirect both stdout and stderr
     let _result1 = Tester::new().stdout(&stdout).stderr(&stderr).run();
     assert!(_result1.is_ok(), "Redirect stream test 1 failed: {:?}", _result1.unwrap_err());
 
@@ -109,7 +111,7 @@ fn redirect_stream() {
     std::fs::remove_file(&stdout).unwrap();
     std::fs::remove_file(&stderr).unwrap();
 
-    // Teste 2: apenas stdout redirecionado
+    // Case 2: only stdout is redirected
     let _result2 = Tester::new().stdout(&stdout).run();
     assert!(_result2.is_ok(), "Redirect stream test 2 failed: {:?}", _result2.unwrap_err());
     assert_eq!(&std::fs::read_to_string(&stdout).unwrap(), STDOUT_DATA);
@@ -120,7 +122,7 @@ fn redirect_stream() {
 
     std::fs::remove_file(&stdout).unwrap();
 
-    // Teste 3: apenas stderr redirecionado
+    // Case 3: only stderr is redirected
     let _result3 = Tester::new().stderr(&stderr).run();
     assert!(_result3.is_ok(), "Redirect stream test 3 failed: {:?}", _result3.unwrap_err());
     assert_eq!(

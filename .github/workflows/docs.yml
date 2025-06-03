@@ -22,7 +22,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: -p daemonize
+          args: -p crossdaemonize
 
       - name: Deploy docs
         uses: JamesIves/github-pages-deploy-action@4.1.4

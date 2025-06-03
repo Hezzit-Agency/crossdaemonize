@@ -16,10 +16,10 @@ use std::fs::OpenOptions;
 #[cfg(unix)]
 use libc;
 
-// Constantes públicas para serem acessíveis de examples/tester.rs
+// Public constants used by examples/tester.rs
 pub const ARG_PID_FILE: &str = "--pid-file";
 pub const ARG_CHOWN_PID_FILE: &str = "--chown-pid-file";
-pub const ARG_WORKING_DIRECTORY: &str = "--working-directory"; // Caminho absoluto para o WD
+pub const ARG_WORKING_DIRECTORY: &str = "--working-directory"; // absolute path for the working directory
 pub const ARG_USER_STRING: &str = "--user-string";
 #[cfg(unix)]
 pub const ARG_USER_NUM: &str = "--user-num";
@@ -30,12 +30,12 @@ pub const ARG_UMASK: &str = "--umask";
 pub const ARG_CHROOT: &str = "--chroot";
 pub const ARG_STDOUT: &str = "--stdout";
 pub const ARG_STDERR: &str = "--stderr";
-pub const ARG_ADDITIONAL_FILE: &str = "--additional-file"; // Caminho absoluto para o arquivo adicional
+pub const ARG_ADDITIONAL_FILE: &str = "--additional-file"; // absolute path for the additional file
 pub const ARG_SLEEP_MS: &str = "--sleep-ms";
 pub const ARG_HUMAN_READABLE: &str = "--human-readable";
 pub const ARG_OUTPUT_FILE: &str = "--output-file";
 
-// Constantes de dados públicas
+// Public data constants
 pub const STDOUT_DATA: &str = "stdout data";
 pub const STDERR_DATA: &str = "stderr data";
 pub const ADDITIONAL_FILE_DATA: &str = "additional file data";
@@ -278,8 +278,8 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     let mut group_num_passed: Option<u32> = None;
     let mut umask_passed: Option<u32> = None;
     let mut chroot_passed: Option<PathBuf> = None;
-    let mut stdout_passed: Option<PathBuf> = None;
-    let mut stderr_passed: Option<PathBuf> = None;
+    let stdout_passed: Option<PathBuf> = None;
+    let stderr_passed: Option<PathBuf> = None;
     let mut additional_file_passed: Option<PathBuf> = None;
     let mut sleep_ms_passed: Option<u64> = None;
     let mut human_readable_passed: bool = false;
@@ -389,7 +389,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let mut dummy_handle = None;
-    let (mut read_pipe, mut write_pipe) = os_pipe::pipe()
+    let (mut read_pipe, write_pipe) = os_pipe::pipe()
         .map_err(|e| format!("unable to open pipe: {}", e))?;
 
 

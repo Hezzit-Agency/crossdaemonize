@@ -3,9 +3,10 @@
 extern crate crossdaemonize_tests;
 extern crate tempfile;
 
-use crossdaemonize_tests::{Tester, STDOUT_DATA, STDERR_DATA, ADDITIONAL_FILE_DATA};
+use crossdaemonize_tests::{Tester, STDOUT_DATA, STDERR_DATA};
+#[cfg(windows)]
+use crossdaemonize_tests::ADDITIONAL_FILE_DATA;
 use tempfile::TempDir;
-use std::path::PathBuf; // <-- ADICIONADO este import
 
 #[test]
 fn simple() {
@@ -17,9 +18,9 @@ fn simple() {
 fn chdir() {
     let _result_init = Tester::new().run().unwrap();
 
-    // --- CRIAÇÃO DO DIRETÓRIO TEMPORÁRIO PELO PAI E PASSAGEM DO CAMINHO COMPLETO ---
+    // --- create temporary directory and pass full path ---
     let temp_dir_for_chdir = TempDir::new().expect("Failed to create temp dir for chdir test");
-    let target_dir_path = temp_dir_for_chdir.path().to_path_buf(); // Caminho completo do diretório temporário
+    let target_dir_path = temp_dir_for_chdir.path().to_path_buf(); // full path of the temporary directory
 
     let _result_chdir = Tester::new().working_directory(&target_dir_path).run();
     assert!(_result_chdir.is_ok(), "chdir test failed: {:?}", _result_chdir.unwrap_err());
@@ -92,7 +93,7 @@ fn pid() {
 
 #[test]
 fn redirect_stream() {
-    let tmpdir = TempDir::new().unwrap(); // Criado aqui para englobar todas as operações
+    let tmpdir = TempDir::new().unwrap(); // Created here for all operations
     let stdout = tmpdir.path().join("stdout");
     let stderr = tmpdir.path().join("stderr");
 

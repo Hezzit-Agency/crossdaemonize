@@ -1,4 +1,4 @@
-extern crate daemonize;
+extern crate crossdaemonize as daemonize;
 
 use std::fs::File;
 

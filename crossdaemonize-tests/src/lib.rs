@@ -40,7 +40,7 @@ pub const STDOUT_DATA: &str = "stdout data";
 pub const STDERR_DATA: &str = "stderr data";
 pub const ADDITIONAL_FILE_DATA: &str = "additional file data";
 
-// Caminho para o executável tester.exe (localizado em examples/ dentro do seu próprio projeto)
+// Path to the tester executable located in the examples directory
 const TESTER_PATH: &str = if cfg!(windows) {
     "../target/debug/examples/tester.exe"
 } else {
@@ -49,7 +49,7 @@ const TESTER_PATH: &str = if cfg!(windows) {
 
 const MAX_WAIT_DURATION: std::time::Duration = std::time::Duration::from_secs(5);
 
-// Struct Tester (inalterada na sua lógica principal)
+// Tester struct used to configure and run the example daemon
 pub struct Tester {
     command: Command,
     _output_file_path: Option<PathBuf>,
@@ -146,6 +146,9 @@ impl Tester {
         let output_file_path = temp_file.path().to_path_buf();
         self._output_file_path = Some(output_file_path.clone());
 
+        // Remove the file so the daemonized child can create it with its own permissions
+        std::fs::remove_file(&output_file_path).ok();
+
         self.command.arg(ARG_OUTPUT_FILE).arg(&output_file_path);
 
         let mut child = self
@@ -199,7 +202,7 @@ impl Tester {
     }
 }
 
-// EnvData (pública, inalterada)
+// Data captured from the daemonized process
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EnvData {
     pub cwd: String,
@@ -245,7 +248,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(log_file, "[DEBUG - SYSTEM] OS: {}", std::env::consts::OS).ok();
     writeln!(log_file, "[DEBUG - SYSTEM] Parent CWD: {:?}", std::env::current_dir().ok()).ok();
 
-    let mut daemonize_builder = Daemonize::new(); // Este builder será configurado com os argumentos
+    let mut daemonize_builder = Daemonize::new(); // builder configured using parsed arguments
 
     #[cfg(windows)]
     {
@@ -266,7 +269,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|_| panic!("invalid value for key {}", key))
     }
 
-    // Variáveis para armazenar os argumentos parseados
+    // Variables to store parsed arguments
     let mut pid_file_passed: Option<PathBuf> = None;
     let mut chown_pid_file_passed: Option<bool> = None;
     let mut working_directory_passed: Option<PathBuf> = None;
@@ -347,8 +350,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
         human_readable_passed
     ).ok();
 
-    // AGORA, CONFIGURE O DAEMONIZE_BUILDER COM BASE NOS ARGUMENTOS PARSEADOS
-    // A maioria das configurações pode ser feita diretamente aqui.
+    // Configure the daemonize builder using the parsed arguments
 
     if let Some(path) = pid_file_passed {
         daemonize_builder = daemonize_builder.pid_file(&path);
@@ -356,9 +358,9 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(b) = chown_pid_file_passed {
         daemonize_builder = daemonize_builder.chown_pid_file(b);
     }
-    // working_directory será configurado no builder, o diretório precisa existir e ser acessível.
+    // working_directory is set on the builder; the directory must exist
     if let Some(path) = working_directory_passed {
-        // Garantir que o diretório exista antes de pedir ao daemon para mudar para ele
+        // ensure the directory exists before asking the daemon to switch to it
         std::fs::create_dir_all(&path)
             .map_err(|e| format!("Failed to create working directory {:?} before daemonizing: {}", path, e))?;
         daemonize_builder = daemonize_builder.working_directory(&path);
@@ -383,9 +385,9 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = chroot_passed {
         daemonize_builder = daemonize_builder.chroot(&path);
     }
-    // stdout e stderr já foram configurados no loop, se presentes.
-    // additional_file será tratado *depois* da daemonização (no child)
-    // sleep_ms e human_readable também serão usados *depois* da daemonização.
+    // stdout and stderr were configured in the loop if present.
+    // additional_file is handled after daemonization in the child.
+    // sleep_ms and human_readable are also used only after daemonization.
 
 
     let mut dummy_handle = None;
@@ -403,7 +405,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Outcome::Child(result) => {
-            drop(read_pipe); // Fecha a ponta de leitura no filho
+            drop(read_pipe); // close the read end in the child
 
             writeln!(log_file, "[DEBUG - CHILD] Inside child process. Daemonize result: {:?}", result).ok();
 
@@ -412,8 +414,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(Box::new(err));
             }
 
-            // TRATAMENTO DE additional_file AQUI NO CHILD
-            // A pasta já deve existir e ser acessível, pois o pai a criou e a passou.
+            // handle additional_file in the child; the directory was created by the parent
             if let Some(path) = additional_file_passed {
                 writeln!(log_file, "[DEBUG - CHILD] Creating additional file: {:?}", path).ok();
                 if let Ok(mut file) = std::fs::File::create(&path) {
@@ -436,7 +437,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
                 let mut output_file = std::fs::File::create(&path)
                     .map_err(|e| format!("Child: Failed to create output file {:?}: {}", path, e))?;
 
-                if human_readable_passed { // <-- AGORA USAMOS A VARIÁVEL BOOLEANA AQUI
+                if human_readable_passed {
                     writeln!(log_file, "[DEBUG - CHILD] Serializing human readable EnvData to file.").ok();
                     output_file.write_all(format!("{:?}\n", env).as_bytes())
                         .map_err(|e| format!("Child: failed to write human readable data to file: {}", e))?;
@@ -459,9 +460,9 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
             writeln!(log_file, "[DEBUG - CHILD] Dropping main write_pipe (not used for EnvData).").ok();
             drop(write_pipe);
 
-            if let Some(duration_ms) = sleep_ms_passed { // <-- AGORA USAMOS A VARIÁVEL AQUI
+            if let Some(duration_ms) = sleep_ms_passed {
                 writeln!(log_file, "[DEBUG - CHILD] Sleeping for {}ms.", duration_ms).ok();
-                std::thread::sleep(std::time::Duration::from_millis(duration_ms)); // <-- CONVERTE PARA DURACION AQUI
+                std::thread::sleep(std::time::Duration::from_millis(duration_ms));
             }
             writeln!(log_file, "[DEBUG - CHILD] Child process finished successfully.").ok();
             Ok(())
@@ -469,7 +470,7 @@ pub fn execute_tester_inner() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-// Função de fachada para compatibilidade, chamando execute_tester_inner
+// Compatibility wrapper that calls execute_tester_inner
 pub fn execute_tester() {
     if let Err(e) = execute_tester_inner() {
         eprintln!("[FACADE] Error in execute_tester: {:?}", e);

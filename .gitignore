@@ -1,2 +1,7 @@
 target
 Cargo.lock
+
+# Test logs
+crossdaemonize-tests/tester_debug.log
+
+test_output.log
